@@ -1,0 +1,47 @@
+/* NOTE: Base :root palette is the dark theme. Adding the .dark class switches to a light palette.
+    This inverted naming keeps legacy dark-first design tokens intact while enabling a 'light' UX toggle
+    without refactoring variable names. */
+:root {
+    --color-bg: #0F1115;
+    --color-surface: #171A1F;
+    --color-surface-alt: #1F242B;
+    --color-text: #F8FAFC;
+    --color-text-muted: #94A3B8;
+    --color-accent: #2563EB;
+    --color-accent-contrast: #FFFFFF;
+    --color-border: #2C323A;
+    --color-border-strong: #3B4450;
+    --color-danger: #DC2626;
+    --color-warning: #D97706;
+    --color-success: #059669;
+    --focus-ring: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-accent);
+
+    --easing-standard: cubic-bezier(0.4, 0.1, 0.2, 1);
+    --dur-fast: 120ms;
+    --dur: 200ms;
+    --dur-slow: 320ms;
+
+    --radius-xs: 2px;
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 10px;
+    --radius-pill: 999px;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, .08);
+    --shadow-md: 0 2px 4px -1px rgba(0, 0, 0, .15), 0 4px 12px -2px rgba(0, 0, 0, .12);
+    --shadow-lg: 0 4px 10px -2px rgba(0, 0, 0, .35), 0 12px 28px -6px rgba(0, 0, 0, .3);
+}
+
+.dark {
+    --color-bg: #FFFFFF;
+    --color-surface: #FFFFFF;
+    --color-surface-alt: #F5F7FA;
+    --color-text: #0F1115;
+    --color-text-muted: #4B5563;
+    --color-accent: #1D4ED8;
+    --color-accent-contrast: #FFFFFF;
+    --color-border: #E2E8F0;
+    --color-border-strong: #CBD5E1;
+    --color-danger: #B91C1C;
+    --color-warning: #B45309;
+    --color-success: #047857;
+}
