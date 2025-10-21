@@ -8,7 +8,7 @@ npm install
 
 # 2. (Optional) create .env to override defaults
 @"
-ADMIN_TOKEN=changeme
+ADMIN_TOKEN=
 PORT=3000
 "@ | Out-File -Encoding UTF8 .env
 
