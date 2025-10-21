@@ -1,0 +1,128 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+    font-feature-settings: 'ss01' on;
+}
+
+body {
+    font-family: theme('fontFamily.sans');
+    -webkit-font-smoothing: antialiased;
+}
+
+/******** Components ********/
+.btn {
+    @apply inline-flex items-center justify-center rounded-md px-4 py-2 font-medium transition-colors duration-200 bg-accent text-accent-contrast hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[var(--color-accent)] disabled:opacity-50 disabled:cursor-not-allowed;
+}
+
+.btn-outline {
+    @apply bg-transparent border border-border text-text hover:bg-surface-alt;
+}
+
+/* Quiet / secondary button */
+.btn-quiet {
+    @apply bg-transparent text-text/80 hover:text-text border border-border/60 hover:border-border px-4 py-2 rounded-md font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50;
+}
+
+.badge {
+    @apply inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold tracking-wide uppercase bg-accent text-accent-contrast;
+}
+
+.card {
+    @apply bg-surface rounded-lg shadow-card border border-border overflow-hidden flex flex-col;
+}
+
+/* Category chip */
+.category-chip {
+    @apply px-4 py-1.5 rounded-full bg-surface-alt/70 border border-border text-xs font-medium text-text/80 hover:text-text hover:bg-surface transition-colors backdrop-blur-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40;
+}
+
+/* Panel glass effect */
+.glass-panel {
+    background: linear-gradient(125deg, var(--color-surface)/78 10%, var(--color-surface-alt)/72 55%, var(--color-surface)/78 100%);
+    backdrop-filter: blur(18px) saturate(140%);
+}
+
+/* Navigation link */
+.nav-link { @apply text-muted hover:text-text transition-colors relative focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded-sm; }
+
+.icon-btn { @apply text-muted hover:text-text transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded-md p-1.5; }
+
+.search-input { @apply bg-surface-alt/80 backdrop-blur-sm border border-border rounded-md px-3 py-1.5 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 transition-colors; }
+
+/* Elevation hover utility */
+.hover\:-translate-y-1:hover { transform: translateY(-0.25rem); }
+
+/* Gradient / background helpers */
+.bg-radial-hero {
+    background:
+        radial-gradient(circle at 25% 35%, color-mix(in srgb, var(--color-accent) 28%, transparent) 0%, transparent 60%),
+        linear-gradient(145deg, var(--color-bg) 0%, var(--color-surface) 55%, var(--color-bg) 100%);
+}
+
+.bg-hero-angle { background: linear-gradient(160deg, var(--color-accent)/6 0%, transparent 40%, transparent 70%, var(--color-accent)/5 100%); }
+
+/* Hover shadow (card lift) */
+.shadow-hover { box-shadow: 0 6px 18px -6px rgba(0 0 0 / 0.35), 0 2px 4px -1px rgba(0 0 0 / 0.25); }
+.hover\:shadow-hover:hover { box-shadow: 0 6px 18px -6px rgba(0 0 0 / 0.35), 0 2px 4px -1px rgba(0 0 0 / 0.25); }
+
+/* Focus ring utility (for manual usage) */
+.focus-ring { box-shadow: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-accent); }
+
+/* Highlight styling for search results (if using manual mark) */
+.product-highlight, mark.product-highlight { background: color-mix(in srgb, var(--color-accent) 35%, transparent); border-radius: 3px; padding: 0 1px; }
+
+@media (prefers-reduced-motion: reduce) {
+    .transition-all, .transition-colors, .transition-shadow { transition: none !important; }
+}
+
+/******** Utilities ********/
+.text-muted {
+    color: var(--color-text-muted);
+}
+
+.shadow-focus {
+    box-shadow: var(--focus-ring);
+}
+
+/******** Animations ********/
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.animate-fade-in {
+    animation: fadeIn var(--dur) var(--easing-standard) both;
+}
+
+/* Highlight (search matches) */
+mark {
+    background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+    color: inherit;
+    padding: 0;
+    border-radius: 2px;
+}
+
+/* Skeleton shimmer */
+@keyframes skeletonShimmer {
+    0% { background-position: -200px 0; }
+    100% { background-position: 200px 0; }
+}
+
+.animate-skeleton .bg-surface-alt {
+    background: linear-gradient(90deg, var(--color-surface-alt) 0%, var(--color-surface) 40%, var(--color-surface-alt) 80%);
+    background-size: 400px 100%;
+    animation: skeletonShimmer 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .animate-skeleton .bg-surface-alt { animation: none; }
+}

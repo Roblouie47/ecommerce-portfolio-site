@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>T-Shirt Shop</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" href="data:,">
+</head>
+
+<body>
+    <header class="site-header">
+        <div class="logo-area">
+            <h1 class="logo-text">T-Shirt<span class="accent">Shop</span></h1>
+        </div>
+        <nav class="main-nav" aria-label="Main navigation">
+            <a href="#" data-route="home" class="nav-link">Home</a>
+            <a href="#" data-route="catalog" class="nav-link">Catalog</a>
+            <a href="#" data-route="my-orders" class="nav-link">My Orders</a>
+            <a href="#" data-route="admin" class="nav-link">Admin</a>
+        </nav>
+        <div class="header-actions">
+            <a href="#" data-route="cart" class="cart-fab" aria-label="View cart">
+                <span class="cart-icon" aria-hidden="true">
+                    <!-- Shopping Cart SVG -->
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                        stroke-linejoin="round">
+                        <circle cx="9" cy="21" r="1" />
+                        <circle cx="20" cy="21" r="1" />
+                        <path d="M1 1h4l2.68 11.39a2 2 0 0 0 2 1.61h8.72a2 2 0 0 0 2-1.61L23 6H6" />
+                    </svg>
+                </span>
+                <span class="cart-label">Cart</span>
+                <span id="cart-count" class="cart-badge">0</span>
+                <span class="cart-hover-bar" aria-hidden="true"></span>
+            </a>
+            <!-- Country selector injected by app.js will mount here -->
+        </div>
+    </header>
+
+    <span class="cart-hover-rail" aria-hidden="true"></span>
+
+    <main id="app-root" class="app-root">
+        <!-- Dynamic content loads here -->
+    </main>
+
+    <footer class="site-footer">
+        <p>&copy; <span id="year"></span> T-Shirt Shop. All rights reserved 2025.</p>
+        <p class="foot-note">Nicolas Shop.</p>
+    </footer>
+
+    <!-- Modal root -->
+    <div id="modal-root" class="modal-root hidden"></div>
+    <!-- Toast root -->
+    <div id="toast-root" aria-live="polite" aria-atomic="true" class="hidden"></div>
+    <!-- Spinner overlay root -->
+    <div id="spinner-root" class="spinner-root hidden" aria-hidden="true"></div>
+
+    <script src="https://js.stripe.com/v3"></script>
+    <script src="components.js"></script>
+    <!-- Cache-busted app.js to ensure newest admin discount actions load -->
+    <script src="app.js?v=20250824-1"></script>
+    <script>
+        // Register service worker
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js').catch(() => { });
+            });
+        }
+        // Year
+        document.addEventListener('DOMContentLoaded', () => { const y = document.getElementById('year'); if (y) y.textContent = new Date().getFullYear(); });
+    </script>
+</body>
+
+</html>
