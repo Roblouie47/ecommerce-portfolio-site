@@ -4,8 +4,10 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
+const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { v4: uuid } = require('uuid');
-const { PORT, ADMIN_TOKEN, STRIPE_SECRET, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE, PUBLIC_URL } = require('./src/config/env');
+const { PORT, ADMIN_TOKEN, ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME, STRIPE_SECRET, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE, PUBLIC_URL } = require('./src/config/env');
 const { isAdmin, requireAdmin } = require('./src/middleware/admin');
 const db = require('./src/db');
 const { parseJSONField, validateProductInput, validateVariant, buildProductRow, computeCartTotals, getReviewSummary } = require('./src/utils');
@@ -21,6 +23,153 @@ if (stripe && STRIPE_WEBHOOK_SECRET) {
   app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), handleStripeWebhook);
 }
 app.use(express.json());
+
+const CUSTOMER_SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+const selectUserByEmailStmt = db.prepare('SELECT id, email, passwordHash, name, role, avatarUrl, country, address FROM users WHERE LOWER(email) = LOWER(?) LIMIT 1');
+const insertUserStmt = db.prepare('INSERT INTO users (id, email, passwordHash, name, role, avatarUrl, country, address, createdAt) VALUES (@id, @email, @passwordHash, @name, @role, @avatarUrl, @country, @address, @createdAt)');
+const selectSessionWithUserStmt = db.prepare(`SELECT s.id AS sessionId, s.token, s.createdAt AS sessionCreatedAt, s.expiresAt, u.id AS userId, u.email, u.name, u.role, u.avatarUrl, u.country, u.address FROM sessions s JOIN users u ON u.id = s.userId WHERE s.token = ?`);
+const insertSessionStmt = db.prepare('INSERT INTO sessions (id, userId, token, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)');
+const deleteSessionByTokenStmt = db.prepare('DELETE FROM sessions WHERE token = ?');
+const deleteExpiredSessionsStmt = db.prepare('DELETE FROM sessions WHERE expiresAt <= ?');
+const updateSessionExpiryStmt = db.prepare('UPDATE sessions SET expiresAt = ? WHERE token = ?');
+
+function sanitizeUserRow(row) {
+  if (!row) return null;
+  return {
+    id: row.userId || row.id || '',
+    email: row.email || '',
+    name: row.name || '',
+    avatarUrl: row.avatarUrl || '',
+    country: row.country || '',
+    address: row.address || ''
+  };
+}
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function normalizeEmail(value) {
+  if (typeof value !== 'string') return '';
+  return value.trim().toLowerCase();
+}
+
+function clampText(value, max) {
+  if (typeof value !== 'string') return '';
+  return value.trim().slice(0, max);
+}
+
+function normalizeCountry(value) {
+  const text = clampText(value, 64);
+  return text ? text.toUpperCase() : '';
+}
+
+const DEFAULT_ADMIN_EMAIL = normalizeEmail(ADMIN_EMAIL);
+const DEFAULT_ADMIN_PASSWORD = typeof ADMIN_PASSWORD === 'string' ? ADMIN_PASSWORD : '';
+const DEFAULT_ADMIN_NAME = clampText(ADMIN_NAME || 'Store Admin', 120) || 'Store Admin';
+
+(function ensureDefaultAdmin() {
+  const email = DEFAULT_ADMIN_EMAIL;
+  const password = DEFAULT_ADMIN_PASSWORD;
+  if (!email || !password) {
+    console.warn('[admin-account] Missing ADMIN_EMAIL or ADMIN_PASSWORD configuration. Skipping default admin seeding.');
+    return;
+  }
+  try {
+    const existing = selectUserByEmailStmt.get(email);
+    if (existing && existing.role === 'admin') {
+      return;
+    }
+    const passwordHash = bcrypt.hashSync(password, 12);
+    const now = new Date().toISOString();
+    if (existing) {
+      db.prepare('UPDATE users SET passwordHash=?, role=?, name=? WHERE id=?')
+        .run(passwordHash, 'admin', existing.name || DEFAULT_ADMIN_NAME, existing.id);
+      console.log('[admin-account] Promoted existing user to admin role.');
+    } else {
+      insertUserStmt.run({
+        id: uuidv4(),
+        email,
+        passwordHash,
+        name: DEFAULT_ADMIN_NAME,
+        role: 'admin',
+        avatarUrl: '',
+        country: '',
+        address: '',
+        createdAt: now
+      });
+      console.log('[admin-account] Seeded default admin user.');
+    }
+  } catch (err) {
+    console.warn('[admin-account] Unable to ensure default admin:', err.message);
+  }
+})();
+
+function buildCustomerSessionResponse(session) {
+  return {
+    token: session.token,
+    user: session.user,
+    expiresAt: session.expiresAt
+  };
+}
+
+function hashPassword(password) {
+  return new Promise((resolve, reject) => {
+    bcrypt.hash(password, 12, (err, hash) => {
+      if (err) return reject(err);
+      resolve(hash);
+    });
+  });
+}
+
+function comparePassword(password, hash) {
+  return new Promise((resolve, reject) => {
+    bcrypt.compare(password, hash, (err, ok) => {
+      if (err) return reject(err);
+      resolve(ok);
+    });
+  });
+}
+
+function pruneExpiredCustomerSessions() {
+  try { deleteExpiredSessionsStmt.run(new Date().toISOString()); } catch { }
+}
+
+function createCustomerSession(userId) {
+  pruneExpiredCustomerSessions();
+  const token = crypto.randomBytes(32).toString('hex');
+  const createdAt = new Date();
+  const expiresAt = new Date(createdAt.getTime() + CUSTOMER_SESSION_TTL_MS);
+  insertSessionStmt.run(uuidv4(), userId, token, createdAt.toISOString(), expiresAt.toISOString());
+  return { token, createdAt: createdAt.toISOString(), expiresAt: expiresAt.toISOString() };
+}
+
+function getCustomerSession(req) {
+  const authHeader = req.headers.authorization || req.headers.Authorization;
+  if (!authHeader || typeof authHeader !== 'string') return null;
+  const parts = authHeader.split(' ');
+  if (parts.length !== 2 || !/^Bearer$/i.test(parts[0])) return null;
+  const token = parts[1].trim();
+  if (!token) return null;
+  pruneExpiredCustomerSessions();
+  const sessionRow = selectSessionWithUserStmt.get(token);
+  if (!sessionRow) return null;
+  if (sessionRow.role && sessionRow.role !== 'customer') {
+    deleteSessionByTokenStmt.run(token);
+    return null;
+  }
+  const now = Date.now();
+  const expiresAtMs = sessionRow.expiresAt ? new Date(sessionRow.expiresAt).getTime() : 0;
+  if (expiresAtMs && expiresAtMs <= now) {
+    deleteSessionByTokenStmt.run(token);
+    return null;
+  }
+  const newExpiry = new Date(now + CUSTOMER_SESSION_TTL_MS).toISOString();
+  try { updateSessionExpiryStmt.run(newExpiry, token); } catch { }
+  return {
+    token,
+    user: sanitizeUserRow(sessionRow),
+    expiresAt: newExpiry
+  };
+}
 
 // Prepared statements for reviews & moderation
 const selectProductBasicStmt = db.prepare('SELECT id, title FROM products WHERE id = ?');
@@ -259,6 +408,104 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 // Memory storage for CSV import (avoid keeping uploaded files)
 const uploadMemory = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
+
+// ---------- Customer Authentication Endpoints ----------
+app.post('/api/customer/register', async (req, res) => {
+  try {
+    const { email: rawEmail, password, name: rawName, avatarUrl: rawAvatar, country: rawCountry, address: rawAddress } = req.body || {};
+    const email = normalizeEmail(rawEmail);
+    const passwordValue = typeof password === 'string' ? password : '';
+    if (!email || !EMAIL_REGEX.test(email)) return res.status(400).json({ error: 'A valid email is required' });
+    if (passwordValue.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    const existing = selectUserByEmailStmt.get(email);
+    if (existing) return res.status(409).json({ error: 'Email already registered' });
+
+    const name = clampText(rawName, 120);
+    const avatarUrl = clampText(rawAvatar, 2048);
+    const country = normalizeCountry(rawCountry);
+    const address = clampText(rawAddress, 512);
+  const passwordHash = await hashPassword(passwordValue);
+    const userId = uuid();
+    const now = new Date().toISOString();
+    insertUserStmt.run({
+      id: userId,
+      email,
+      passwordHash,
+      name,
+      role: 'customer',
+      avatarUrl,
+      country,
+      address,
+      createdAt: now
+    });
+    const session = createCustomerSession(userId);
+    const user = sanitizeUserRow({ userId, email, name, avatarUrl, country, address });
+    res.status(201).json(buildCustomerSessionResponse({ ...session, user }));
+  } catch (err) {
+    console.error('[customer] register failed', err);
+    res.status(500).json({ error: 'Unable to register' });
+  }
+});
+
+app.post('/api/customer/login', async (req, res) => {
+  try {
+    const { email: rawEmail, password } = req.body || {};
+    const email = normalizeEmail(rawEmail);
+    const passwordValue = typeof password === 'string' ? password : '';
+    if (!email || !EMAIL_REGEX.test(email) || !passwordValue) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+    const userRow = selectUserByEmailStmt.get(email);
+    if (!userRow) return res.status(401).json({ error: 'Invalid email or password' });
+    const passwordOk = await comparePassword(passwordValue, userRow.passwordHash || '');
+    if (!passwordOk) return res.status(401).json({ error: 'Invalid email or password' });
+    const role = (userRow.role || 'customer').toLowerCase();
+    const sanitized = sanitizeUserRow(userRow);
+    if (role === 'admin') {
+      return res.json({ admin: { token: ADMIN_TOKEN, user: { ...sanitized, role: 'admin' } } });
+    }
+    if (role && role !== 'customer') {
+      return res.status(403).json({ error: 'Unsupported account type' });
+    }
+    const session = createCustomerSession(userRow.id);
+    res.json(buildCustomerSessionResponse({ ...session, user: sanitized }));
+  } catch (err) {
+    console.error('[customer] login failed', err);
+    res.status(500).json({ error: 'Unable to login' });
+  }
+});
+
+app.get('/api/customer/session', (req, res) => {
+  try {
+    const session = getCustomerSession(req);
+    if (!session) return res.status(401).json({ error: 'Session expired' });
+    res.json(buildCustomerSessionResponse(session));
+  } catch (err) {
+    console.error('[customer] session check failed', err);
+    res.status(500).json({ error: 'Unable to verify session' });
+  }
+});
+
+app.post('/api/customer/logout', (req, res) => {
+  try {
+    const session = getCustomerSession(req);
+    if (session?.token) {
+      deleteSessionByTokenStmt.run(session.token);
+    } else {
+      const authHeader = req.headers.authorization || req.headers.Authorization;
+      if (typeof authHeader === 'string') {
+        const parts = authHeader.split(' ');
+        if (parts.length === 2 && /^Bearer$/i.test(parts[0]) && parts[1]) {
+          try { deleteSessionByTokenStmt.run(parts[1].trim()); } catch { }
+        }
+      }
+    }
+    res.status(204).end();
+  } catch (err) {
+    console.error('[customer] logout failed', err);
+    res.status(500).json({ error: 'Unable to logout' });
+  }
+});
 
 // Health route module
 app.use('/api', require('./src/routes/health'));
@@ -1000,6 +1247,29 @@ app.post('/api/orders/:id/return-request', (req, res) => {
   db.prepare('INSERT INTO order_events(id,orderId,status,at) VALUES(?,?,?,?)').run(uuidv4(), order.id, 'return_requested', now);
   audit('order', order.id, 'return-request', order, { returnRequestedAt: now });
   res.json({ returnRequested: true, at: now });
+});
+
+// ---------- Admin Authentication ----------
+app.post('/api/admin/login', async (req, res) => {
+  try {
+    const { email: rawEmail, password } = req.body || {};
+    const email = normalizeEmail(rawEmail);
+    const passwordValue = typeof password === 'string' ? password : '';
+    if (!email || !passwordValue) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+    const userRow = selectUserByEmailStmt.get(email);
+    if (!userRow || (userRow.role || '').toLowerCase() !== 'admin') {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+  const ok = await comparePassword(passwordValue, userRow.passwordHash || '');
+  if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
+  const payload = { ...sanitizeUserRow(userRow), role: 'admin' };
+    res.json({ token: ADMIN_TOKEN, user: payload });
+  } catch (err) {
+    console.error('[admin] login failed', err);
+    res.status(500).json({ error: 'Unable to login' });
+  }
 });
 
 // ---------- Review Moderation (Admin) ----------

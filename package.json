@@ -14,5 +14,18 @@
     "multer": "^1.4.5-lts.1",
     "stripe": "^16.0.0",
     "uuid": "^11.1.0"
-  }
+  },
+  "description": "Run steps (Windows PowerShell):",
+  "main": "server.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Roblouie47/ecommerce-portfolio-site.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Roblouie47/ecommerce-portfolio-site/issues"
+  },
+  "homepage": "https://github.com/Roblouie47/ecommerce-portfolio-site#readme"
 }
