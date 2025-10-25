@@ -3,7 +3,7 @@
  */
 (function () {
     'use strict';
-    console.log('App JS version: 2025-08-23-2');
+    console.log('App JS version: 2025-10-24-7');
 
     function renderProductReviews(productId) {
         const prod = state.productsById.get(productId) || state.productsById.get(String(productId)) || state.productsById.get(Number(productId));
@@ -198,14 +198,51 @@
         cartPage: { discountCode: '', discountApplied: false, shipCountry: 'PH' },
         admin: {
             token: localStorage.getItem('adminToken') || '',
+            user: (function () {
+                try {
+                    const raw = localStorage.getItem('adminProfile');
+                    if (!raw) return null;
+                    const parsed = JSON.parse(raw);
+                    if (!parsed || typeof parsed !== 'object') return null;
+                    return {
+                        id: typeof parsed.id === 'string' ? parsed.id : '',
+                        email: typeof parsed.email === 'string' ? parsed.email : '',
+                        name: typeof parsed.name === 'string' ? parsed.name : ''
+                    };
+                } catch {
+                    return null;
+                }
+            })(),
             orders: [],
             showDeleted: localStorage.getItem('adminShowDeleted') === '1',
             discounts: [],
             lowStock: [],
             reviews: { status: 'pending', items: [] }
         },
-    meta: null,
-    lastOrder: null,
+        customer: (function () {
+            try {
+                const rawProfile = localStorage.getItem('customerProfile');
+                const token = localStorage.getItem('customerSessionToken') || '';
+                if (!rawProfile || !token) return null;
+                const data = JSON.parse(rawProfile);
+                if (!data || typeof data !== 'object') return null;
+                const profile = {
+                    id: typeof data.id === 'string' ? data.id : '',
+                    name: typeof data.name === 'string' ? data.name : '',
+                    email: typeof data.email === 'string' ? data.email : '',
+                    avatarUrl: typeof data.avatarUrl === 'string' ? data.avatarUrl : '',
+                    country: typeof data.country === 'string' ? data.country : '',
+                    address: typeof data.address === 'string' ? data.address : ''
+                };
+                if (!profile.email && !profile.name) return null;
+                return { ...profile, sessionToken: token };
+            } catch {
+                return null;
+            }
+        })(),
+        meta: null,
+        lastOrder: null,
+        pendingCatalogSearchTerm: '',
         myOrders: [],
         favorites: (function () { try { const arr = JSON.parse(localStorage.getItem('favorites') || '[]'); return Array.isArray(arr) ? arr.map(String) : []; } catch { return []; } })()
     };
@@ -242,6 +279,7 @@
     }
 
     function el(tag, opts = {}, ...children) {
+        opts = opts || {};
         const node = document.createElement(tag);
         if (opts.class) node.className = opts.class;
         if (opts.attrs) for (const [k, v] of Object.entries(opts.attrs)) if (v != null) node.setAttribute(k, v);
@@ -280,29 +318,28 @@
         return 'USD';
     }
 
-    // Inject global country selector into header (runs after DOM ready)
-    document.addEventListener('DOMContentLoaded', () => {
+    function mountCountrySelector() {
         const header = document.querySelector('.site-header');
         if (!header) return;
         const headerActions = header.querySelector('.header-actions') || header; // prefer new actions container
         let existing = document.getElementById('global-country-select');
         if (existing) return; // already added
         const wrap = document.createElement('div');
-        wrap.style.display = 'flex';
-        wrap.style.alignItems = 'center';
-        wrap.style.gap = '.4rem';
-        wrap.style.marginLeft = '1rem';
-        wrap.innerHTML = '<label style="font-size:.6rem;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:#e2e8f0;">Country</label>';
+    wrap.style.display = 'flex';
+    wrap.style.alignItems = 'center';
+    wrap.style.gap = '.4rem';
+    wrap.style.marginLeft = '1rem';
+    wrap.innerHTML = '<label style="font-size:.6rem;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:#1f2937;">Country</label>';
         const sel = document.createElement('select');
         sel.id = 'global-country-select';
-        sel.style.padding = '.35rem .45rem';
+    sel.style.padding = '.35rem .6rem';
         sel.classList.add('header-country-select');
         sel.style.fontSize = '.7rem';
         sel.style.borderRadius = '4px';
-        sel.style.border = '1px solid rgba(255,255,255,.35)';
-        sel.style.background = 'rgba(255,255,255,.12)';
-        sel.style.color = '#fff';
-        sel.style.backdropFilter = 'blur(4px)';
+    sel.style.border = '1px solid rgba(17,24,39,.15)';
+    sel.style.background = '#f8fafc';
+    sel.style.color = '#111827';
+    sel.style.backdropFilter = 'none';
         sel.style.minWidth = '140px';
         sel.style.zIndex = '500'; // ensure dropdown not hidden by other elements
         // Central country list so we can also reuse for checkout form later
@@ -351,7 +388,754 @@
                 if (storedCountry) sel.value = storedCountry;
             }
         }, 50);
-    });
+    }
+    function mountHeaderEnhancements() {
+        mountCountrySelector();
+        mountCustomerHeaderControls();
+        mountAdminHeaderControls();
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', mountHeaderEnhancements, { once: true });
+    } else {
+        mountHeaderEnhancements();
+    }
+    function mountCustomerHeaderControls() {
+        const header = document.querySelector('.site-header');
+        if (!header) return;
+        const actions = header.querySelector('.header-actions') || header;
+        let container = document.getElementById('customer-auth-controls');
+        const cartAnchor = actions.querySelector('.cart-fab');
+        if (!container) {
+            container = el('div', { class: 'customer-auth-controls', attrs: { id: 'customer-auth-controls' } });
+            if (cartAnchor) actions.insertBefore(container, cartAnchor);
+            else actions.appendChild(container);
+        }
+        container.innerHTML = '';
+        const hideForAdmin = !!(state.admin.token && state.admin.user);
+        if ((state.customer && state.customer.sessionToken) || hideForAdmin) {
+            if (hideForAdmin) {
+                container.classList.add('hidden');
+                return;
+            }
+            container.classList.remove('hidden');
+            const name = (state.customer.name || state.customer.email || 'Customer').trim();
+            const signOutBtn = el('button', { class: 'header-auth-btn outline', attrs: { type: 'button' } }, 'Sign Out');
+            signOutBtn.addEventListener('click', (evt) => { evt.preventDefault(); customerLogoutFlow(); });
+            container.appendChild(signOutBtn);
+            container.appendChild(el('span', { class: 'customer-name-label' }, name));
+            const avatar = el('div', { class: 'customer-avatar', attrs: { 'aria-hidden': 'true' } });
+            if (state.customer.avatarUrl) {
+                avatar.appendChild(el('img', { attrs: { src: state.customer.avatarUrl, alt: '', referrerpolicy: 'no-referrer' } }));
+            } else {
+                avatar.textContent = (name.charAt(0) || 'U').toUpperCase();
+            }
+            container.appendChild(avatar);
+        } else {
+            container.classList.remove('hidden');
+            const signInBtn = el('button', { class: 'header-auth-btn', attrs: { type: 'button' } }, 'Sign In');
+            signInBtn.addEventListener('click', (evt) => { evt.preventDefault(); showCustomerAuthModal('login'); });
+            const signUpBtn = el('button', { class: 'header-auth-btn outline', attrs: { type: 'button' } }, 'Sign Up');
+            signUpBtn.addEventListener('click', (evt) => { evt.preventDefault(); showCustomerAuthModal('register'); });
+            container.appendChild(signInBtn);
+            container.appendChild(signUpBtn);
+        }
+    }
+
+    function normalizeAdminProfile(value) {
+        if (!value || typeof value !== 'object') return null;
+        return {
+            id: typeof value.id === 'string' ? value.id : '',
+            email: typeof value.email === 'string' ? value.email : '',
+            name: typeof value.name === 'string' ? value.name : ''
+        };
+    }
+
+    function updateAdminNavVisibility() {
+        const visible = !!(state.admin.token && state.admin.user);
+        try {
+            document.querySelectorAll('[data-route="admin"]').forEach(link => {
+                link.style.display = visible ? '' : 'none';
+            });
+        } catch { /* no-op */ }
+        if (document.body && document.body.classList) {
+            document.body.classList.toggle('admin-authenticated', visible);
+        }
+    }
+
+    function setAdminAuth(auth) {
+        const token = auth && typeof auth.token === 'string' ? auth.token : '';
+        const profile = normalizeAdminProfile(auth?.user);
+        state.admin.token = token;
+        state.admin.user = profile;
+        try {
+            if (token) localStorage.setItem('adminToken', token);
+            else localStorage.removeItem('adminToken');
+            if (profile) localStorage.setItem('adminProfile', JSON.stringify(profile));
+            else localStorage.removeItem('adminProfile');
+        } catch { /* ignore storage issues */ }
+        updateAdminNavVisibility();
+        mountAdminHeaderControls();
+    }
+
+    function clearAdminAuth(notifyUser = false) {
+        const wasOnAdminRoute = state.currentRoute === 'admin';
+        try {
+            state.admin.token = '';
+            state.admin.user = null;
+            state.admin.orders = [];
+            state.admin.discounts = [];
+            state.admin.lowStock = [];
+            state.admin.reviews = { status: 'pending', items: [] };
+            try {
+                localStorage.removeItem('adminToken');
+                localStorage.removeItem('adminProfile');
+            } catch { /* ignore */ }
+            updateAdminNavVisibility();
+            mountAdminHeaderControls();
+            mountCustomerHeaderControls();
+            if (notifyUser) notify('Admin signed out.', 'info', 2400);
+        } catch (err) {
+            console.error('Failed to clear admin auth state:', err);
+        } finally {
+            if (wasOnAdminRoute) {
+                const redirectHome = () => {
+                    try {
+                        showSpinner(false);
+                        if (state.currentRoute !== 'home') {
+                            navigate('home');
+                        } else {
+                            renderHome();
+                        }
+                    } catch (navErr) {
+                        console.error('Failed to navigate home after admin sign-out:', navErr);
+                        try {
+                            state.currentRoute = 'home';
+                            renderHome();
+                        } catch (renderErr) {
+                            console.error('Failed to render home after admin sign-out:', renderErr);
+                            try { window.location.replace('/'); } catch { /* no-op */ }
+                        }
+                    }
+                };
+                const scheduleRedirect = (fn) => {
+                    if (typeof requestAnimationFrame === 'function') {
+                        requestAnimationFrame(() => {
+                            try { fn(); } catch (err) { console.error('RAF redirect failed after admin sign-out:', err); }
+                        });
+                        return;
+                    }
+                    if (typeof setTimeout === 'function') {
+                        setTimeout(() => {
+                            try { fn(); } catch (err) { console.error('Timeout redirect failed after admin sign-out:', err); }
+                        }, 0);
+                        return;
+                    }
+                    try {
+                        fn();
+                    } catch (err) {
+                        console.error('Immediate redirect failed after admin sign-out:', err);
+                    }
+                };
+                scheduleRedirect(redirectHome);
+            }
+        }
+    }
+
+    function showAdminLoginModal() {
+        if (state.admin.token && state.admin.user) {
+            navigate('admin');
+            return;
+        }
+        showCustomerAuthModal('login');
+    }
+
+    function mountAdminHeaderControls() {
+        const header = document.querySelector('.site-header');
+        if (!header) return;
+        const actions = header.querySelector('.header-actions') || header;
+        let container = document.getElementById('admin-access-controls');
+        const cartAnchor = actions.querySelector('.cart-fab');
+        if (!container) {
+            container = el('div', { class: 'admin-access-controls', attrs: { id: 'admin-access-controls' } });
+            if (cartAnchor) actions.insertBefore(container, cartAnchor);
+            else actions.appendChild(container);
+        }
+        container.innerHTML = '';
+        const isAuthed = !!(state.admin.token && state.admin.user);
+        if (isAuthed) {
+            const name = (state.admin.user?.name || state.admin.user?.email || 'Admin').trim();
+            const signOutBtn = el('button', { class: 'admin-auth-btn', attrs: { type: 'button', id: 'admin-header-signout' } }, 'Sign Out');
+            signOutBtn.addEventListener('click', (evt) => { evt.preventDefault(); clearAdminAuth(true); });
+            container.appendChild(signOutBtn);
+            container.appendChild(el('span', { class: 'admin-name-label' }, name));
+            const avatar = el('div', { class: 'admin-avatar', attrs: { 'aria-hidden': 'true' } });
+            avatar.textContent = (name.charAt(0) || 'A').toUpperCase();
+            container.appendChild(avatar);
+            const customerControls = document.getElementById('customer-auth-controls');
+            if (customerControls) customerControls.classList.add('hidden');
+        }
+        updateAdminNavVisibility();
+    }
+
+    function setCustomerSession(payload) {
+        if (!payload || !payload.user) {
+            clearCustomerSession(false);
+            return;
+        }
+        const token = payload.token || state.customer?.sessionToken || '';
+        if (!token) {
+            clearCustomerSession(false);
+            return;
+        }
+        const user = payload.user;
+        const normalizedCountry = (user.country || '').toString().trim().toUpperCase();
+        state.customer = {
+            id: user.id || '',
+            name: user.name || '',
+            email: user.email || '',
+            avatarUrl: user.avatarUrl || '',
+            country: normalizedCountry,
+            address: user.address || '',
+            sessionToken: token
+        };
+        if (state.customer.country) state.cartPage.shipCountry = state.customer.country;
+        try {
+            localStorage.setItem('customerSessionToken', token);
+            localStorage.setItem('customerProfile', JSON.stringify({
+                id: state.customer.id,
+                name: state.customer.name,
+                email: state.customer.email,
+                avatarUrl: state.customer.avatarUrl,
+                country: state.customer.country,
+                address: state.customer.address
+            }));
+            if (state.customer.email) localStorage.setItem('customerEmail', state.customer.email);
+            if (state.customer.country) localStorage.setItem('globalCountry', state.customer.country);
+        } catch { }
+        if (state.customer.country) {
+            setActiveCurrency(countryToCurrency(state.customer.country));
+            const sel = document.getElementById('global-country-select');
+            if (sel && sel.value !== state.customer.country) {
+                sel.value = state.customer.country;
+                sel.dispatchEvent(new Event('change'));
+            } else if (sel) {
+                sel.dispatchEvent(new Event('change'));
+            }
+        }
+        mountCustomerHeaderControls();
+        if (state.currentRoute === 'my-orders') {
+            renderMyOrders();
+        }
+    }
+
+    function clearCustomerSession(notifyUser = false) {
+        state.customer = null;
+        try {
+            localStorage.removeItem('customerSessionToken');
+            localStorage.removeItem('customerProfile');
+        } catch { }
+        mountCustomerHeaderControls();
+        if (notifyUser) notify('Signed out.', 'info', 2400);
+        if (state.currentRoute === 'my-orders') {
+            renderMyOrders();
+        }
+    }
+
+    async function customerLoginRequest(credentials) {
+        const payload = {
+            email: (credentials.email || '').trim(),
+            password: credentials.password || ''
+        };
+        const data = await apiFetch('/api/customer/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const adminInfo = data?.admin;
+        if (adminInfo?.token) {
+            setAdminAuth({ token: adminInfo.token, user: adminInfo.user });
+        }
+        if (data?.token && data?.user) {
+            setCustomerSession({ token: data.token, user: data.user });
+        }
+        if (!adminInfo?.token && !(data?.token && data?.user)) {
+            throw new Error('Login failed.');
+        }
+        return data;
+    }
+
+    async function customerRegisterRequest(details) {
+        let formattedAddress = '';
+        if (details.address && typeof details.address === 'object') {
+            try { formattedAddress = JSON.stringify(details.address); }
+            catch { formattedAddress = ''; }
+        } else {
+            formattedAddress = (details.address || '').trim();
+        }
+        const payload = {
+            name: (details.name || '').trim(),
+            email: (details.email || '').trim(),
+            password: details.password || '',
+            country: (details.country || '').trim().toUpperCase(),
+            address: formattedAddress
+        };
+        const data = await apiFetch('/api/customer/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (!data || !data.user || !data.token) throw new Error('Registration failed.');
+        setCustomerSession({ token: data.token, user: data.user });
+        return data;
+    }
+
+    async function customerLogoutRequest() {
+        return apiFetch('/api/customer/logout', { method: 'POST', suppressAuthNotify: true });
+    }
+
+    async function customerLogoutFlow() {
+        if (!state.customer || !state.customer.sessionToken) {
+            clearCustomerSession(true);
+            return;
+        }
+        try {
+            await customerLogoutRequest();
+        } catch (err) {
+            console.warn('Customer logout failed:', err.message);
+        }
+        clearCustomerSession(true);
+    }
+
+    async function verifyCustomerSession() {
+        if (!state.customer || !state.customer.sessionToken) {
+            mountCustomerHeaderControls();
+            return false;
+        }
+        try {
+            const data = await apiFetch('/api/customer/session', { suppressAuthNotify: true });
+            if (data && data.user) {
+                const token = data.token || state.customer.sessionToken;
+                if (!token) {
+                    clearCustomerSession(false);
+                    return false;
+                }
+                setCustomerSession({ token, user: data.user });
+                return true;
+            }
+        } catch (err) {
+            console.warn('Customer session verification failed:', err.message);
+            clearCustomerSession(false);
+        }
+        return false;
+    }
+
+    function showCustomerAuthModal(initialMode = 'login') {
+        let mode = initialMode === 'register' ? 'register' : 'login';
+        let submitting = false;
+        showModal((close) => {
+            const wrap = el('div', { class: 'modal auth-dialog', attrs: { role: 'dialog', 'aria-modal': 'true' } });
+            const closeBtn = el('button', { class: 'modal-close', attrs: { type: 'button' } }, '×');
+            wrap.appendChild(closeBtn);
+            const heading = el('h2', { class: 'auth-heading' }, mode === 'login' ? 'Welcome Back' : 'Create Account');
+            const tabBar = el('div', { class: 'auth-tabs' },
+                el('button', { class: 'auth-tab' + (mode === 'login' ? ' active' : ''), attrs: { type: 'button', 'data-mode': 'login' } }, 'Sign In'),
+                el('button', { class: 'auth-tab' + (mode === 'register' ? ' active' : ''), attrs: { type: 'button', 'data-mode': 'register' } }, 'Sign Up')
+            );
+            const formSlot = el('div', { class: 'auth-form-slot' });
+            const status = el('div', { class: 'auth-status tiny muted', attrs: { role: 'status' } });
+            wrap.append(heading, tabBar, formSlot, status);
+            modalRoot.appendChild(wrap);
+            closeBtn.addEventListener('click', close);
+
+            tabBar.addEventListener('click', (evt) => {
+                const btn = evt.target.closest('[data-mode]');
+                if (!btn) return;
+                mode = btn.getAttribute('data-mode') === 'register' ? 'register' : 'login';
+                heading.textContent = mode === 'login' ? 'Welcome Back' : 'Create Account';
+                tabBar.querySelectorAll('.auth-tab').forEach(tab => tab.classList.toggle('active', tab.getAttribute('data-mode') === mode));
+                renderForm();
+            });
+
+            const socialProviders = {
+                google: { name: 'Google', label: 'Sign in with Google', href: '/auth/google', iconClass: 'google' },
+                facebook: { name: 'Facebook', label: 'Sign in with Facebook', href: '/auth/facebook', iconClass: 'facebook' },
+                apple: { name: 'Apple', label: 'Sign in with Apple', href: '/auth/apple', iconClass: 'apple' }
+            };
+
+            function renderForm() {
+                formSlot.innerHTML = '';
+                status.textContent = '';
+                status.classList.remove('error');
+                submitting = false;
+                if (mode === 'login') {
+                    formSlot.appendChild(buildLoginForm());
+                } else {
+                    formSlot.appendChild(buildRegisterForm());
+                }
+            }
+
+            function handleSocialSignIn(provider) {
+                const config = socialProviders[provider];
+                if (!config) return;
+                status.classList.remove('error');
+                if (!config.href) {
+                    status.textContent = `${config.name} sign-in is not configured.`;
+                    status.classList.add('error');
+                    return;
+                }
+                status.textContent = `Opening ${config.name} sign-in…`;
+                const width = 520;
+                const height = 640;
+                const left = window.screenX + Math.max(0, (window.outerWidth - width) / 2);
+                const top = window.screenY + Math.max(0, (window.outerHeight - height) / 2);
+                const popup = window.open(config.href, `${provider}-oauth`, `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`);
+                if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+                    status.textContent = `Please allow pop-ups to continue with ${config.name}.`;
+                    status.classList.add('error');
+                    notify(`Enable pop-ups and try again to sign in with ${config.name}.`, 'error', 4200);
+                } else {
+                    popup.focus();
+                }
+            }
+
+            function buildLoginForm() {
+                const emailField = el('div', { class: 'field' },
+                    el('label', { attrs: { for: 'auth-email' } }, 'Email'),
+                    el('input', { attrs: { id: 'auth-email', type: 'email', autocomplete: 'email', required: 'true', placeholder: 'you@example.com' } })
+                );
+                const passField = el('div', { class: 'field' },
+                    el('label', { attrs: { for: 'auth-password' } }, 'Password'),
+                    el('input', { attrs: { id: 'auth-password', type: 'password', autocomplete: 'current-password', required: 'true', placeholder: '••••••••' } })
+                );
+                if (state.customer?.email) emailField.querySelector('input').value = state.customer.email;
+                const form = el('form', { class: 'auth-form', attrs: { autocomplete: 'on' } },
+                    emailField,
+                    passField,
+                    el('button', { class: 'auth-submit', attrs: { type: 'submit' } }, 'Sign In')
+                );
+                form.addEventListener('submit', async (evt) => {
+                    evt.preventDefault();
+                    if (submitting) return;
+                    const email = emailField.querySelector('input').value.trim();
+                    const password = passField.querySelector('input').value;
+                    if (!email || !password) {
+                        status.textContent = 'Enter your email and password.';
+                        status.classList.add('error');
+                        return;
+                    }
+                    submitting = true;
+                    status.classList.remove('error');
+                    status.textContent = 'Signing you in…';
+                    try {
+                        const res = await customerLoginRequest({ email, password });
+                        const adminGranted = !!(res.admin?.token);
+                        if (adminGranted && !(res.token && res.user)) {
+                            notify('Admin access granted.', 'success', 2600);
+                            close();
+                            navigate('admin');
+                        } else {
+                            const userInfo = res.user || res.admin?.user || {};
+                            notify('Welcome back, ' + (userInfo.name || userInfo.email || 'shopper') + '!', 'success', 2600);
+                            close();
+                        }
+                    } catch (err) {
+                        status.textContent = err.message || 'Sign-in failed.';
+                        status.classList.add('error');
+                    } finally {
+                        submitting = false;
+                    }
+                });
+                const divider = el('div', { class: 'auth-divider' },
+                    el('span', null, 'Or continue with')
+                );
+                const socialButtons = el('div', { class: 'social-buttons' },
+                    ...Object.entries(socialProviders).map(([key, config]) => {
+                        const btn = el('button', { class: `social-btn ${config.iconClass}`, attrs: { type: 'button', 'data-provider': key } },
+                            el('span', { class: `social-icon ${config.iconClass}` }),
+                            el('span', { class: 'social-label' }, config.label)
+                        );
+                        btn.addEventListener('click', () => handleSocialSignIn(key));
+                        return btn;
+                    })
+                );
+                return el('div', { class: 'auth-login-stack' }, form, divider, socialButtons);
+            }
+
+            function buildRegisterForm() {
+                const codeInput = el('input', { attrs: { id: 'reg-code', type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', required: 'true', placeholder: 'Enter verification code' } });
+                const resendBtn = el('button', { class: 'resend-btn', attrs: { type: 'button', 'aria-label': 'Resend code' } }, '↻');
+                const resendLabel = el('span', { class: 'resend-label help-text' }, 'Resend code in 30s');
+                const codeField = el('div', { class: 'field verification-field' },
+                    el('label', { attrs: { for: 'reg-code' } }, 'Code*'),
+                    el('div', { class: 'input-inline' },
+                        codeInput,
+                        resendBtn
+                    ),
+                    resendLabel
+                );
+
+                let resendTimer = null;
+                let resendRemaining = 30;
+                function updateResendLabel() {
+                    if (resendRemaining > 0) {
+                        resendLabel.textContent = `Resend code in ${resendRemaining}s`;
+                        resendBtn.disabled = true;
+                    } else {
+                        resendLabel.textContent = '';
+                        resendBtn.disabled = false;
+                    }
+                }
+                function startResendCountdown() {
+                    if (resendTimer) clearInterval(resendTimer);
+                    updateResendLabel();
+                    if (resendRemaining <= 0) return;
+                    resendTimer = setInterval(() => {
+                        resendRemaining -= 1;
+                        updateResendLabel();
+                        if (resendRemaining <= 0 && resendTimer) {
+                            clearInterval(resendTimer);
+                            resendTimer = null;
+                        }
+                    }, 1000);
+                }
+                startResendCountdown();
+                resendBtn.addEventListener('click', () => {
+                    notify('Verification code resent.', 'info', 2600);
+                    resendRemaining = 30;
+                    startResendCountdown();
+                });
+
+                const firstInput = el('input', { attrs: { id: 'reg-first', type: 'text', autocomplete: 'given-name', required: 'true', placeholder: 'First name' } });
+                const lastInput = el('input', { attrs: { id: 'reg-last', type: 'text', autocomplete: 'family-name', required: 'true', placeholder: 'Surname' } });
+                const firstField = el('div', { class: 'field' },
+                    el('label', { attrs: { for: 'reg-first' } }, 'First Name*'),
+                    firstInput
+                );
+                const lastField = el('div', { class: 'field' },
+                    el('label', { attrs: { for: 'reg-last' } }, 'Surname*'),
+                    lastInput
+                );
+                const nameRow = el('div', { class: 'field-row double' }, firstField, lastField);
+
+                const emailInput = el('input', { attrs: { id: 'reg-email', type: 'email', autocomplete: 'email', required: 'true', placeholder: 'you@example.com' } });
+                const emailField = el('div', { class: 'field' },
+                    el('label', { attrs: { for: 'reg-email' } }, 'Email*'),
+                    emailInput
+                );
+
+                const passwordInput = el('input', { attrs: { id: 'reg-pass', type: 'password', autocomplete: 'new-password', required: 'true', minlength: '8', placeholder: 'Minimum 8 characters' } });
+                const passwordToggle = el('button', { class: 'password-toggle', attrs: { type: 'button', 'aria-label': 'Show password' } }, '👁');
+                const passwordHints = el('ul', { class: 'password-hints' },
+                    el('li', { attrs: { 'data-rule': 'length' } }, 'Minimum of 8 characters'),
+                    el('li', { attrs: { 'data-rule': 'uppercase' } }, 'At least one uppercase letter'),
+                    el('li', { attrs: { 'data-rule': 'lowercase' } }, 'At least one lowercase letter'),
+                    el('li', { attrs: { 'data-rule': 'number' } }, 'At least one number')
+                );
+                const passField = el('div', { class: 'field password-field' },
+                    el('label', { attrs: { for: 'reg-pass' } }, 'Password*'),
+                    el('div', { class: 'input-inline' },
+                        passwordInput,
+                        passwordToggle
+                    ),
+                    passwordHints
+                );
+
+                const confirmInput = el('input', { attrs: { id: 'reg-confirm', type: 'password', autocomplete: 'new-password', required: 'true', minlength: '8', placeholder: 'Re-enter password' } });
+                const confirmField = el('div', { class: 'field' },
+                    el('label', { attrs: { for: 'reg-confirm' } }, 'Confirm Password*'),
+                    confirmInput
+                );
+
+                const preferenceSelect = el('select', { attrs: { id: 'reg-preference', required: 'true' } },
+                    el('option', { attrs: { value: '' } }, 'Select a preference'),
+                    el('option', { attrs: { value: 'womens' } }, 'Women'),
+                    el('option', { attrs: { value: 'mens' } }, 'Men'),
+                    el('option', { attrs: { value: 'kids' } }, 'Kids'),
+                    el('option', { attrs: { value: 'all' } }, 'Shop everything')
+                );
+                const preferenceField = el('div', { class: 'field' },
+                    el('label', { attrs: { for: 'reg-preference' } }, 'Shopping Preference*'),
+                    preferenceSelect
+                );
+
+                const countrySelect = el('select', { attrs: { id: 'reg-country', required: 'true' } },
+                    el('option', { attrs: { value: 'PH' } }, 'Philippines'),
+                    el('option', { attrs: { value: 'US' } }, 'United States'),
+                    el('option', { attrs: { value: 'CA' } }, 'Canada'),
+                    el('option', { attrs: { value: 'AU' } }, 'Australia'),
+                    el('option', { attrs: { value: 'JP' } }, 'Japan'),
+                    el('option', { attrs: { value: 'DE' } }, 'Germany'),
+                    el('option', { attrs: { value: 'FR' } }, 'France'),
+                    el('option', { attrs: { value: 'ES' } }, 'Spain'),
+                    el('option', { attrs: { value: 'IT' } }, 'Italy'),
+                    el('option', { attrs: { value: 'NL' } }, 'Netherlands'),
+                    el('option', { attrs: { value: 'OTHER' } }, 'Other / International')
+                );
+                if (state.customer?.country) countrySelect.value = state.customer.country;
+                const countryField = el('div', { class: 'field' },
+                    el('label', { attrs: { for: 'reg-country' } }, 'Country / Region*'),
+                    countrySelect
+                );
+
+                const dayInput = el('input', { attrs: { id: 'reg-day', type: 'number', inputmode: 'numeric', min: '1', max: '31', placeholder: 'Day', required: 'true' } });
+                const monthInput = el('input', { attrs: { id: 'reg-month', type: 'number', inputmode: 'numeric', min: '1', max: '12', placeholder: 'Month', required: 'true' } });
+                const yearInput = el('input', { attrs: { id: 'reg-year', type: 'number', inputmode: 'numeric', min: '1900', max: new Date().getFullYear(), placeholder: 'Year', required: 'true' } });
+                const dobLabel = el('label', { attrs: { for: 'reg-day' } }, 'Date of Birth*');
+                const dobRow = el('div', { class: 'field-row triple' },
+                    el('div', { class: 'field mini-field' }, dayInput),
+                    el('div', { class: 'field mini-field' }, monthInput),
+                    el('div', { class: 'field mini-field' }, yearInput)
+                );
+                const dobField = el('div', { class: 'field dob-field' },
+                    dobLabel,
+                    dobRow,
+                    el('p', { class: 'field-note' }, 'Get a birthday reward as a member.')
+                );
+
+                const marketingInput = el('input', { attrs: { id: 'reg-marketing', type: 'checkbox' } });
+                const marketingField = el('label', { class: 'checkbox-field', attrs: { for: 'reg-marketing' } },
+                    marketingInput,
+                    el('span', null, 'Sign up for emails to get product updates, offers, and member benefits.')
+                );
+
+                const termsInput = el('input', { attrs: { id: 'reg-terms', type: 'checkbox', required: 'true' } });
+                const termsHighlight = el('span', null,
+                    'I agree to the ',
+                    el('a', { attrs: { href: '/privacy', target: '_blank', rel: 'noreferrer' } }, 'Privacy Policy'),
+                    ' and ',
+                    el('a', { attrs: { href: '/terms', target: '_blank', rel: 'noreferrer' } }, 'Terms of Use'),
+                    '.'
+                );
+                const termsField = el('label', { class: 'checkbox-field', attrs: { for: 'reg-terms' } },
+                    termsInput,
+                    termsHighlight
+                );
+
+                const submitBtn = el('button', { class: 'auth-submit', attrs: { type: 'submit' } }, 'Create Account');
+                const form = el('form', { class: 'auth-form signup-form', attrs: { autocomplete: 'on' } },
+                    codeField,
+                    nameRow,
+                    emailField,
+                    passField,
+                    confirmField,
+                    preferenceField,
+                    countryField,
+                    dobField,
+                    marketingField,
+                    termsField,
+                    submitBtn
+                );
+
+                passwordToggle.addEventListener('click', () => {
+                    const showing = passwordInput.getAttribute('type') === 'text';
+                    passwordInput.setAttribute('type', showing ? 'password' : 'text');
+                    passwordToggle.textContent = showing ? '👁' : '🙈';
+                    passwordToggle.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+                });
+
+                function updatePasswordHints(value) {
+                    const rules = {
+                        length: value.length >= 8,
+                        uppercase: /[A-Z]/.test(value),
+                        lowercase: /[a-z]/.test(value),
+                        number: /\d/.test(value)
+                    };
+                    passwordHints.querySelectorAll('li').forEach(li => {
+                        const rule = li.getAttribute('data-rule');
+                        if (rule && rules[rule]) li.classList.add('met'); else li.classList.remove('met');
+                    });
+                }
+                passwordInput.addEventListener('input', (evt) => updatePasswordHints(evt.target.value || ''));
+                updatePasswordHints('');
+
+                form.addEventListener('submit', async (evt) => {
+                    evt.preventDefault();
+                    if (submitting) return;
+                    const code = codeInput.value.trim();
+                    const firstName = firstInput.value.trim();
+                    const surname = lastInput.value.trim();
+                    const email = emailInput.value.trim();
+                    const pass = passwordInput.value;
+                    const confirm = confirmInput.value;
+                    const preference = preferenceSelect.value;
+                    const country = (countrySelect.value || 'PH').toUpperCase();
+                    const day = dayInput.value.trim();
+                    const month = monthInput.value.trim();
+                    const year = yearInput.value.trim();
+                    const marketingOptIn = marketingInput.checked;
+                    const termsChecked = termsInput.checked;
+
+                    updatePasswordHints(pass);
+
+                    if (!code || code.length < 4) {
+                        status.textContent = 'Enter the verification code we sent you.';
+                        status.classList.add('error');
+                        return;
+                    }
+                    if (!firstName || !surname || !email) {
+                        status.textContent = 'Please fill in all required fields.';
+                        status.classList.add('error');
+                        return;
+                    }
+                    const strongPassword = pass.length >= 8 && /[A-Z]/.test(pass) && /[a-z]/.test(pass) && /\d/.test(pass);
+                    if (!strongPassword) {
+                        status.textContent = 'Password must meet all requirements.';
+                        status.classList.add('error');
+                        return;
+                    }
+                    if (pass !== confirm) {
+                        status.textContent = 'Passwords do not match.';
+                        status.classList.add('error');
+                        return;
+                    }
+                    if (!preference) {
+                        status.textContent = 'Select your shopping preference.';
+                        status.classList.add('error');
+                        return;
+                    }
+                    if (!day || !month || !year) {
+                        status.textContent = 'Enter your complete date of birth.';
+                        status.classList.add('error');
+                        return;
+                    }
+                    if (!termsChecked) {
+                        status.textContent = 'You must agree to the terms to continue.';
+                        status.classList.add('error');
+                        return;
+                    }
+
+                    submitting = true;
+                    status.classList.remove('error');
+                    status.textContent = 'Creating your account…';
+                    const name = `${firstName} ${surname}`.trim();
+                    const addressMeta = {
+                        verificationCode: code,
+                        shoppingPreference: preference,
+                        dob: { day, month, year },
+                        marketingOptIn,
+                        termsAcceptedAt: new Date().toISOString()
+                    };
+                    try {
+                        const res = await customerRegisterRequest({ name, email, password: pass, country, address: addressMeta });
+                        notify('Account ready. Welcome, ' + (res.user?.name || firstName) + '!', 'success', 2800);
+                        if (resendTimer) {
+                            clearInterval(resendTimer);
+                            resendTimer = null;
+                        }
+                        close();
+                    } catch (err) {
+                        status.textContent = err.message || 'Registration failed.';
+                        status.classList.add('error');
+                    } finally {
+                        submitting = false;
+                    }
+                });
+                return form;
+            }
+
+            renderForm();
+        });
+    }
     function money(cents, opts = { showBase: false }) {
         const usdValue = cents / 100;
         const cur = CURRENCY_RATES[activeCurrency] || CURRENCY_RATES.USD;
@@ -545,15 +1329,23 @@
      * API Helpers
      * ---------------------------- */
     async function apiFetch(path, opts = {}) {
-        const headers = opts.headers || {};
-        if (state.admin.token) headers['X-Admin-Token'] = state.admin.token;
-        const res = await fetch(path, { ...opts, headers });
+        const { suppressAuthNotify = false, headers: headersOverride, ...rest } = opts;
+        const headers = { ...(headersOverride || {}) };
+        if (state.admin.token && !headers['X-Admin-Token']) headers['X-Admin-Token'] = state.admin.token;
+        if (state.customer?.sessionToken && !headers.Authorization && !headers.authorization) headers.Authorization = 'Bearer ' + state.customer.sessionToken;
+        const res = await fetch(path, { ...rest, headers });
         if (!res.ok) {
             let msg = `HTTP ${res.status}`;
             try { const j = await res.json(); msg = j.error || j.errors?.join(', ') || msg; } catch { }
             if (res.status === 401) {
-                if (!state.admin.token) notify('Admin token needed (set it in Admin panel)', 'error', 5000);
-                else notify('Admin token rejected. Re-enter token.', 'error', 6000);
+                const isAdminPath = path.startsWith('/api/admin');
+                if (isAdminPath) {
+                    clearAdminAuth(false);
+                    if (!suppressAuthNotify) notify('Admin sign-in required.', 'error', 4800);
+                } else if (state.customer?.sessionToken) {
+                    clearCustomerSession(false);
+                    if (!suppressAuthNotify) notify('Please sign in to continue.', 'warn', 3200);
+                }
             }
             throw new Error(msg);
         }
@@ -604,7 +1396,7 @@
     }
 
     async function loadAdminReviews(status = 'pending') {
-        if (!state.admin.token) {
+        if (!state.admin.token || !state.admin.user) {
             state.admin.reviews = { status, items: [] };
             return;
         }
@@ -613,7 +1405,7 @@
     }
 
     async function moderateReview(reviewId, action, notes) {
-        if (!state.admin.token) throw new Error('Admin token required');
+        if (!state.admin.token || !state.admin.user) throw new Error('Admin sign-in required');
         const endpoint = action === 'approve' ? 'approve' : 'reject';
         const body = notes ? JSON.stringify({ notes }) : '{}';
         const res = await apiFetch(`/api/admin/reviews/${reviewId}/${endpoint}`, {
@@ -634,7 +1426,7 @@
     }
 
     async function loadOrdersAdmin() {
-        if (!state.admin.token) {
+        if (!state.admin.token || !state.admin.user) {
             state.admin.orders = [];
             return;
         }
@@ -648,7 +1440,7 @@
     }
 
     async function loadDiscounts() {
-        if (!state.admin.token) { state.admin.discounts = []; return; }
+        if (!state.admin.token || !state.admin.user) { state.admin.discounts = []; return; }
         try {
             const d = await apiFetch('/api/discounts');
             state.admin.discounts = d.discounts;
@@ -658,7 +1450,7 @@
     }
 
     async function loadLowStock(threshold = 5) {
-        if (!state.admin.token) { state.admin.lowStock = []; return; }
+        if (!state.admin.token || !state.admin.user) { state.admin.lowStock = []; return; }
         try {
             const d = await apiFetch('/api/products/low-stock?threshold=' + threshold);
             state.admin.lowStock = d.products;
@@ -755,8 +1547,18 @@
      * ---------------------------- */
 
     async function verifyAdminToken() {
-        if (!state.admin.token) return false;
-        try { await apiFetch('/api/admin/verify'); return true; } catch { return false; }
+        if (!state.admin.token || !state.admin.user) {
+            updateAdminNavVisibility();
+            return false;
+        }
+        try {
+            await apiFetch('/api/admin/verify', { suppressAuthNotify: true });
+            updateAdminNavVisibility();
+            return true;
+        } catch (err) {
+            clearAdminAuth(false);
+            return false;
+        }
     }
 
     function navigate(route, params = {}) {
@@ -786,8 +1588,9 @@
             (async () => {
                 const ok = await verifyAdminToken();
                 if (!ok) {
-                    notify('Admin access denied. Enter valid token first.', 'error', 5000);
+                    notify('Admin access denied. Please sign in first.', 'error', 5000);
                     navigate('home');
+                    showAdminLoginModal();
                     return;
                 }
                 renderAdmin();
@@ -813,6 +1616,36 @@
         navigate(route, id ? { id } : {});
     });
 
+    const CATALOG_PREVIEW_FILTERS = [
+        {
+            title: "Men's Wear",
+            items: [
+                { label: 'T-Shirts', term: 'men t-shirt' },
+                { label: 'Hoodies', term: 'men hoodie' },
+                { label: 'Pants', term: 'men pants' },
+                { label: 'Accessories', term: 'men accessories' }
+            ]
+        },
+        {
+            title: "Girls' Wear",
+            items: [
+                { label: 'T-Shirts', term: 'women t-shirt' },
+                { label: 'Hoodies', term: 'women hoodie' },
+                { label: 'Pants', term: 'women pants' },
+                { label: 'Accessories', term: 'women accessories' }
+            ]
+        },
+        {
+            title: "Kids' Wear",
+            items: [
+                { label: 'T-Shirts', term: 'kids t-shirt' },
+                { label: 'Hoodies', term: 'kids hoodie' },
+                { label: 'Pants', term: 'kids pants' },
+                { label: 'Accessories', term: 'kids accessories' }
+            ]
+        }
+    ];
+
     /* ----------------------------
      * RENDER: Home
      * ---------------------------- */
@@ -826,41 +1659,143 @@
             ),
             el('p', { class: 'hero-copy' }, 'Browse a curated list of minimal, high‑quality shirts. Experiment with product management.'),
             el('div', { class: 'hero-actions' },
-                el('button', { class: 'btn btn-success', attrs: { 'data-route': 'catalog' } }, 'Explore Catalog'),
-                el('button', { class: 'btn btn-outline', attrs: { 'data-route': 'cart' } }, 'View Cart'),
-                el('button', { class: 'btn btn-outline', attrs: { 'data-route': 'favorites' } }, 'Favorites')
+                el('button', { class: 'btn btn-primary hero-btn', attrs: { 'data-route': 'catalog' } }, 'Explore Catalog'),
+                el('button', { class: 'btn btn-outline hero-btn', attrs: { 'data-route': 'cart' } }, 'View Cart'),
+                el('button', { class: 'btn btn-outline hero-btn', attrs: { 'data-route': 'favorites' } }, 'Favorites')
             )
         );
 
         rootEl.appendChild(hero);
         // Inline catalog preview appended on home (scroll down to view)
         const previewHeader = el('h2', { class: 'home-catalog-heading mt-lg' }, 'Catalog Preview');
-        const previewWrap = el('div', { class: 'home-catalog-preview mt-md' });
-        const list = el('div', { class: 'home-catalog-grid' });
-        // Take first 8 non-deleted items
-        state.products.filter(p => !p.deletedAt).slice(0, 8).forEach(p => {
-            const card = el('div', { class: 'home-product-card', attrs: { 'data-product-id': p.id } },
-                el('div', { class: 'hpc-img-wrap' },
-                    el('img', { attrs: { src: p.images[0] || 'https://via.placeholder.com/300?text=Tee', loading: 'lazy' } })
-                ),
-                el('div', { class: 'hpc-body' },
-                    el('h3', { class: 'hpc-title' }, p.title),
-                    el('div', { class: 'hpc-meta' }, el('span', { class: 'price', attrs: { 'data-price-cents': p.priceCents } }, money(p.priceCents)), ' · ', 'Stock ', productStock(p)),
-                    (p.reviewSummary && p.reviewSummary.count > 0 ? renderStarRating(p.reviewSummary.average, p.reviewSummary.count, { size: 'xs' }) : null),
-                    el('div', { class: 'hpc-actions' },
-                        el('button', { class: 'btn btn-xs', attrs: { 'data-view-id': p.id } }, 'View'),
-                        el('button', { class: 'btn btn-xs btn-outline', attrs: { 'data-add': p.id } }, 'Add'),
-                        el('button', { class: 'btn btn-xs btn-outline', attrs: { 'data-fav': p.id, 'aria-pressed': isFavorite(p.id) ? 'true' : 'false' } }, isFavorite(p.id) ? '♥' : '♡')
-                    )
-                )
+    const previewWrap = el('div', { class: 'home-catalog-preview mt-md filters-visible', attrs: { 'data-has-filters': 'true' } });
+    const topRow = el('div', { class: 'catalog-preview-top' });
+    const filterPanel = el('div', { class: 'catalog-preview-filters', attrs: { 'aria-hidden': 'false' } });
+        CATALOG_PREVIEW_FILTERS.forEach(section => {
+            const col = el('div', { class: 'catalog-preview-column' },
+                el('h3', { class: 'catalog-preview-heading' }, section.title)
             );
-            list.appendChild(card);
+            const links = el('ul', { class: 'catalog-preview-links' });
+            section.items.forEach(item => {
+                const btn = el('button', { class: 'catalog-preview-link', attrs: { type: 'button' } }, item.label);
+                btn.addEventListener('click', (evt) => {
+                    evt.preventDefault();
+                    state.pendingCatalogSearchTerm = item.term;
+                    navigate('catalog');
+                });
+                links.appendChild(el('li', {}, btn));
+            });
+            col.appendChild(links);
+            filterPanel.appendChild(col);
         });
+        topRow.appendChild(filterPanel);
+        const searchWrap = el('div', { class: 'catalog-preview-search favorites-search' },
+            el('input', {
+                class: 'catalog-preview-search-input favorites-search-input',
+                attrs: { type: 'search', placeholder: 'Search catalog…', id: 'home-catalog-search' }
+            })
+        );
+        topRow.appendChild(searchWrap);
+        previewWrap.appendChild(topRow);
+        const searchInput = searchWrap.querySelector('input');
+    const list = el('div', { class: 'home-catalog-grid' });
+    const previewProducts = state.products.filter(p => !p.deletedAt);
+    const MAX_PREVIEW_ITEMS = 8;
+
+        const buildPreviewCard = (p) => {
+            const card = el('article', { class: 'home-product-card', attrs: { 'data-product-id': p.id } });
+            card.appendChild(el('div', { class: 'hpc-img-wrap' },
+                el('img', {
+                    attrs: {
+                        src: p.images[0] || 'https://via.placeholder.com/400x320?text=Tee',
+                        loading: 'lazy',
+                        alt: p.title || 'Catalog item'
+                    }
+                })
+            ));
+
+            const body = el('div', { class: 'hpc-body' });
+            body.appendChild(el('h3', { class: 'hpc-title' }, p.title));
+
+            const meta = el('div', { class: 'hpc-meta' },
+                el('span', { class: 'hpc-price price', attrs: { 'data-price-cents': p.priceCents } }, money(p.priceCents)),
+                el('span', { class: 'hpc-stock' }, `Stock ${productStock(p)}`)
+            );
+            body.appendChild(meta);
+
+            if (p.reviewSummary && p.reviewSummary.count > 0) {
+                const rating = renderStarRating(p.reviewSummary.average, p.reviewSummary.count, { size: 'xs' });
+                rating.classList.add('hpc-rating');
+                body.appendChild(rating);
+            }
+
+            const favActive = isFavorite(p.id);
+            const actions = el('div', { class: 'hpc-actions' },
+                el('button', { class: 'btn hpc-action-btn hpc-action-view', attrs: { type: 'button', 'data-view-id': p.id } }, 'View'),
+                el('button', { class: 'btn hpc-action-btn hpc-action-add', attrs: { type: 'button', 'data-add': p.id } }, 'Add'),
+                el('button', {
+                    class: 'btn hpc-action-btn hpc-action-fav' + (favActive ? ' active' : ''),
+                    attrs: {
+                        type: 'button',
+                        'data-fav': p.id,
+                        'aria-pressed': favActive ? 'true' : 'false',
+                        title: favActive ? 'Remove from favorites' : 'Add to favorites'
+                    }
+                }, favActive ? '♥' : '♡')
+            );
+            body.appendChild(actions);
+
+            card.appendChild(body);
+            return card;
+        };
+
+        const renderPreviewCards = (items) => {
+            list.innerHTML = '';
+            const trimmed = items.slice(0, MAX_PREVIEW_ITEMS);
+            if (!trimmed.length) {
+                list.appendChild(el('div', { class: 'muted small', attrs: { style: 'grid-column:1/-1;text-align:center;padding:1rem 0;' } }, 'No matching items in this preview.'));
+                return;
+            }
+            trimmed.forEach(p => list.appendChild(buildPreviewCard(p)));
+            updateFavoriteIcons(list);
+        };
+
+        const applyPreviewSearch = () => {
+            const term = (searchInput?.value || '').trim().toLowerCase();
+            if (!term) {
+                renderPreviewCards(previewProducts);
+                return;
+            }
+            const matches = previewProducts.filter(p => {
+                const title = (p.title || '').toLowerCase();
+                const desc = (p.description || '').toLowerCase();
+                const tags = Array.isArray(p.tags) ? p.tags : [];
+                return title.includes(term) || desc.includes(term) || tags.some(t => (t || '').toLowerCase().includes(term));
+            });
+            renderPreviewCards(matches);
+        };
+
+        if (searchInput && !searchInput._wired) {
+            searchInput._wired = true;
+            searchInput.addEventListener('input', applyPreviewSearch);
+            searchInput.addEventListener('keydown', (evt) => {
+                if (evt.key !== 'Enter') return;
+                evt.preventDefault();
+                const term = searchInput.value.trim();
+                if (!term) return;
+                state.pendingCatalogSearchTerm = term;
+                navigate('catalog');
+            });
+        }
+
+        renderPreviewCards(previewProducts);
         previewWrap.appendChild(list);
         const moreBtn = el('div', { class: 'mt-md' }, el('button', { class: 'btn btn-outline', attrs: { 'data-route': 'catalog' } }, 'View Full Catalog'));
         rootEl.appendChild(previewHeader);
         rootEl.appendChild(previewWrap);
         rootEl.appendChild(moreBtn);
+
+        // Filters are always visible; no hover handlers needed
 
         // Initialize heart states and handle clicks
         updateFavoriteIcons(previewWrap);
@@ -1004,6 +1939,7 @@
     function renderCatalog() {
         rootEl.innerHTML = '';
         const panel = el('section', { class: 'panel catalog-panel' });
+        const panelBody = el('div', { class: 'catalog-panel-body' });
         const header = el('div', { class: 'catalog-header' },
             el('div', { class: 'catalog-heading' },
                 el('h2', { class: 'catalog-title' }, 'Catalog')
@@ -1022,7 +1958,8 @@
                 el('button', { class: 'btn btn-small catalog-search-btn', attrs: { type: 'submit' } }, 'Search')
             )
         );
-        panel.appendChild(header);
+        panelBody.appendChild(header);
+        panel.appendChild(panelBody);
         rootEl.appendChild(panel);
 
         const searchForm = header.querySelector('#catalog-search-form');
@@ -1038,7 +1975,7 @@
         wrap.appendChild(viewport);
         wrap.appendChild(btnPrev);
         wrap.appendChild(btnNext);
-        panel.appendChild(wrap);
+    panelBody.appendChild(wrap);
 
         let productsShown = state.products.filter(p => !p.deletedAt).slice();
         let index = 0; // center index
@@ -1201,6 +2138,15 @@
 
         // Initial render
         renderItems();
+        if (state.pendingCatalogSearchTerm) {
+            const term = state.pendingCatalogSearchTerm;
+            state.pendingCatalogSearchTerm = '';
+            if (searchInput) {
+                searchInput.value = term;
+                runSearch();
+                try { searchInput.focus(); } catch { /* no-op */ }
+            }
+        }
         window.addEventListener('resize', () => centerOn(index, false));
     }
 
@@ -1880,6 +2826,21 @@
                     el('div', {}, el('button', { class: 'btn btn-success', attrs: { type: 'submit' } }, 'Place Order'), ' ', el('button', { class: 'btn btn-outline', attrs: { type: 'button', id: 'fb-cancel' } }, 'Cancel'))
                 );
                 container.appendChild(fb);
+                if (state.customer) {
+                    const nameInput = fb.querySelector('#fb-name');
+                    const emailInput = fb.querySelector('#fb-email');
+                    const addressInput = fb.querySelector('#fb-address');
+                    const countrySelect = fb.querySelector('#fb-country');
+                    if (nameInput && state.customer.name) nameInput.value = state.customer.name;
+                    if (emailInput && state.customer.email) emailInput.value = state.customer.email;
+                    if (addressInput && state.customer.address) addressInput.value = state.customer.address;
+                    if (countrySelect && state.customer.country) {
+                        const desired = Array.from(countrySelect.options || []).some(opt => opt.value === state.customer.country)
+                            ? state.customer.country
+                            : 'OTHER';
+                        countrySelect.value = desired;
+                    }
+                }
                 container.querySelector('.modal-close').addEventListener('click', closeFn);
                 fb.querySelector('#fb-cancel').addEventListener('click', closeFn);
                 fb.addEventListener('submit', async ev => {
@@ -1946,6 +2907,19 @@
                     fieldInput('Shipping Code', 'shipping-code', 'text', false),
                     el('div', { class: 'field', attrs: { style: 'grid-column:1/-1;' } }, el('button', { class: 'btn btn-success', attrs: { type: 'submit' } }, 'Place Order'), ' ', el('button', { class: 'btn btn-outline', attrs: { type: 'button', id: 'cancel-checkout' } }, 'Cancel'))
                 );
+                if (state.customer) {
+                    const nameInput = form.querySelector('#cust-name');
+                    const emailInput = form.querySelector('#cust-email');
+                    const addressInput = form.querySelector('#cust-address');
+                    const countrySelect = form.querySelector('#cust-country');
+                    if (nameInput && state.customer.name) nameInput.value = state.customer.name;
+                    if (emailInput && state.customer.email) emailInput.value = state.customer.email;
+                    if (addressInput && state.customer.address) addressInput.value = state.customer.address;
+                    if (countrySelect && state.customer.country) {
+                        const match = Array.from(countrySelect.options || []).some(opt => opt.value === state.customer.country);
+                        countrySelect.value = match ? state.customer.country : 'OTHER';
+                    }
+                }
                 wrap.querySelector('#checkout-loading')?.remove();
                 wrap.appendChild(summary);
                 wrap.appendChild(form);
@@ -2269,7 +3243,7 @@
     function renderMyOrders() {
         rootEl.innerHTML = '';
         // Capture / reuse customer email (stored in localStorage) for querying orders
-        const storedEmail = localStorage.getItem('customerEmail') || '';
+    const storedEmail = state.customer?.email || localStorage.getItem('customerEmail') || '';
         const emailBar = el('div', { class: 'flex gap-sm mt-sm', attrs: { style: 'flex-wrap:wrap;' } },
             el('input', { attrs: { type: 'email', id: 'my-orders-email', placeholder: 'Enter your order email', value: storedEmail, style: 'padding:.5rem .6rem;border:1px solid var(--border);border-radius:6px;min-width:240px;' } }),
             el('button', { class: 'btn btn-small', attrs: { id: 'load-my-orders' } }, 'Load Orders')
@@ -2447,58 +3421,35 @@
      * ---------------------------- */
 
     function renderAdmin() {
+        if (!state.admin.token || !state.admin.user) {
+            clearAdminAuth(false);
+            navigate('home');
+            showAdminLoginModal();
+            return;
+        }
         rootEl.innerHTML = '';
         const panel = el('section', { class: 'panel' },
             el('div', { class: 'panel-header' },
                 el('span', {}, 'Admin Panel'),
-                el('div', { class: 'inline-fields' },
-                    el('input', {
-                        class: 'p-sm',
-                        attrs: { type: 'password', id: 'admin-token', placeholder: 'Admin token', value: state.admin.token }
-                    }),
-                    el('button', { class: 'btn btn-small', attrs: { id: 'save-token' } }, 'Set Token'),
-                    el('button', { class: 'btn btn-small btn-outline', attrs: { id: 'new-product' } }, 'New Product')
+                el('div', { class: 'inline-fields admin-panel-head' },
+                    el('span', { class: 'admin-email tiny muted' }, state.admin.user.email || 'Admin'),
+                    el('button', { class: 'btn btn-small btn-outline', attrs: { id: 'admin-panel-signout' } }, 'Sign Out'),
+                    el('button', { class: 'btn btn-small', attrs: { id: 'new-product' } }, 'New Product')
                 )
             )
         );
         rootEl.appendChild(panel);
 
-        // Warning banner if token missing
-        const warn = !state.admin.token ? el('div', { class: 'alert alert-warn mt-sm' }, 'No admin token set. Enter token then click Set Token to enable product create/update/delete.') : null;
-        if (warn) panel.appendChild(warn);
-
-        // Disable new product button until token present
         const newBtn = panel.querySelector('#new-product');
-        if (!state.admin.token) {
-            newBtn.setAttribute('disabled', 'true');
-            newBtn.classList.add('btn-disabled');
+        if (newBtn) {
+            newBtn.addEventListener('click', () => showProductModal());
         }
-
-        // Token status pill
-        const statusPill = el('div', { class: 'mt-sm muted', attrs: { id: 'admin-token-status' } }, state.admin.token ? 'Token set' : 'Token NOT set');
-        panel.appendChild(statusPill);
-
-        panel.querySelector('#save-token').addEventListener('click', async () => {
-            const val = panel.querySelector('#admin-token').value.trim();
-            state.admin.token = val;
-            localStorage.setItem('adminToken', val);
-            statusPill.textContent = val ? 'Token set' : 'Token NOT set';
-            notify('Admin token updated', 'success');
-            if (state.admin.token) {
-                newBtn.removeAttribute('disabled');
-                newBtn.classList.remove('btn-disabled');
-                if (warn) warn.remove();
-                // Re-check visibility of admin links
-                verifyAdminToken().then(ok => {
-                    document.querySelectorAll('[data-route="admin"]').forEach(el => { el.style.display = ok ? '' : 'none'; });
-                });
-            } else {
-                newBtn.setAttribute('disabled', 'true');
-            }
-            await refreshAdminData();
-        });
-
-        panel.querySelector('#new-product').addEventListener('click', () => showProductModal());
+        const signOutBtn = panel.querySelector('#admin-panel-signout');
+        if (signOutBtn) {
+            signOutBtn.addEventListener('click', () => {
+                clearAdminAuth(true);
+            });
+        }
 
         const prodWrap = el('div', { class: 'panel mt-md' },
             el('div', { class: 'panel-header' },
@@ -2859,11 +3810,11 @@
             <tbody></tbody>
         `;
         const tbody = table.querySelector('tbody');
-        const hasToken = !!state.admin.token;
+        const hasAuth = !!(state.admin.token && state.admin.user);
         const items = Array.isArray(state.admin.reviews?.items) ? state.admin.reviews.items : [];
-        if (!hasToken) {
+        if (!hasAuth) {
             tbody.appendChild(el('tr', {},
-                el('td', { attrs: { colspan: '8' } }, el('div', { class: 'muted small' }, 'Set admin token to load reviews'))
+                el('td', { attrs: { colspan: '8' } }, el('div', { class: 'muted small' }, 'Sign in as admin to load reviews'))
             ));
             return;
         }
@@ -2957,6 +3908,7 @@
 
     // Enhance refreshAdminData to also fetch discounts & low stock
     async function refreshAdminData() {
+        if (!state.admin.token) return;
         await loadProducts(state.admin.showDeleted);
         // Prune deletedBuffer: remove entries now represented in canonical product list or restored
         try {
@@ -3203,6 +4155,7 @@
     async function init() {
         try {
             showSpinner(true);
+            await verifyCustomerSession();
             await Promise.all([loadProducts(), loadMeta()]);
             sanitizeCart();
             updateCartBadge();
