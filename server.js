@@ -1340,8 +1340,12 @@ app.post('/api/admin/reviews/:id/reject', requireAdmin, (req, res) => {
 
 // Public list of customer's own orders by email (case-insensitive)
 app.get('/api/my-orders', (req, res) => {
-  const email = (req.query.email || '').toString().trim();
-  if (!email) return res.status(400).json({ error: 'email required' });
+  const session = getCustomerSession(req);
+  if (!session || !session.user || !session.user.email) {
+    return res.status(401).json({ error: 'Sign-in required' });
+  }
+  const email = session.user.email.trim().toLowerCase();
+  if (!email) return res.status(401).json({ error: 'Sign-in required' });
   const rows = db.prepare('SELECT id,status,createdAt,paidAt,fulfilledAt,shippedAt,cancelledAt,completedAt,returnRequestedAt,returnReason,subtotalCents,discountCents,totalCents,shippingCents,shippingDiscountCents,discountCode,shippingCode FROM orders WHERE LOWER(customerEmail)=LOWER(?) ORDER BY createdAt DESC LIMIT 200').all(email);
   res.json({ orders: rows });
 });
