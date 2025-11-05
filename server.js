@@ -1451,7 +1451,7 @@ app.get('/api/products/low-stock', requireAdmin, (req, res) => {
   for (const r of rows) {
     const totalInv = db.prepare('SELECT SUM(inventory) as sum FROM variants WHERE productId=?').get(r.id).sum;
     const inv = (totalInv !== null ? totalInv : r.baseInventory);
-    if (inv < threshold) low.push({ id: r.id, title: r.title, totalInventory: inv, priceCents: r.priceCents });
+    if (inv <= threshold) low.push({ id: r.id, title: r.title, totalInventory: inv, priceCents: r.priceCents });
   }
   res.json({ threshold, products: low });
 });

@@ -1,5 +1,12 @@
 const defaultTheme = require('tailwindcss/defaultTheme');
 
+const withOpacityValue = (variable) => ({ opacityValue }) => {
+    if (opacityValue !== undefined) {
+        return `rgb(var(${variable}) / ${opacityValue})`;
+    }
+    return `rgb(var(${variable}))`;
+};
+
 module.exports = {
     darkMode: 'class',
     content: [
@@ -20,16 +27,18 @@ module.exports = {
         },
         extend: {
             colors: {
-                bg: 'var(--color-bg)',
-                surface: 'var(--color-surface)',
-                accent: 'var(--color-accent)',
-                'accent-contrast': 'var(--color-accent-contrast)',
-                text: 'var(--color-text)',
-                muted: 'var(--color-text-muted)',
-                border: 'var(--color-border)',
-                danger: 'var(--color-danger)',
-                warning: 'var(--color-warning)',
-                success: 'var(--color-success)'
+                bg: withOpacityValue('--color-bg-rgb'),
+                surface: withOpacityValue('--color-surface-rgb'),
+                'surface-alt': withOpacityValue('--color-surface-alt-rgb'),
+                accent: withOpacityValue('--color-accent-rgb'),
+                'accent-contrast': withOpacityValue('--color-accent-contrast-rgb'),
+                text: withOpacityValue('--color-text-rgb'),
+                muted: withOpacityValue('--color-text-muted-rgb'),
+                border: withOpacityValue('--color-border-rgb'),
+                'border-strong': withOpacityValue('--color-border-strong-rgb'),
+                danger: withOpacityValue('--color-danger-rgb'),
+                warning: withOpacityValue('--color-warning-rgb'),
+                success: withOpacityValue('--color-success-rgb')
             },
             fontFamily: {
                 sans: ['Inter', ...defaultTheme.fontFamily.sans]

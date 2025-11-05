@@ -5,6 +5,13 @@
     'use strict';
     console.log('App JS version: 2025-10-24-7');
 
+    const PRODUCT_PLACEHOLDER_BASE = 'https://images.unsplash.com/photo-1521572163474-6864f9cf17ab';
+    // Provide a consistent on-brand fallback image sized per context.
+    function productPlaceholder(width = 640) {
+        const safeWidth = Math.max(320, Math.min(Math.round(width), 1600));
+        return `${PRODUCT_PLACEHOLDER_BASE}?auto=format&fit=crop&w=${safeWidth}&q=80`;
+    }
+
     function renderProductReviews(productId) {
         const prod = state.productsById.get(productId) || state.productsById.get(String(productId)) || state.productsById.get(Number(productId));
         if (!prod || prod.deletedAt) {
@@ -215,6 +222,7 @@
             })(),
             orders: [],
             showDeleted: localStorage.getItem('adminShowDeleted') === '1',
+            activePanel: 'products',
             discounts: [],
             lowStock: [],
             reviews: { status: 'pending', items: [] }
@@ -251,6 +259,36 @@
     const modalRoot = document.getElementById('modal-root');
     const spinnerRoot = document.getElementById('spinner-root');
 
+    const CATALOG_PREVIEW_FILTERS = [
+        {
+            title: "Men's Wear",
+            items: [
+                { label: 'T-Shirts', term: 'men t-shirt' },
+                { label: 'Hoodies', term: 'men hoodie' },
+                { label: 'Pants', term: 'men pants' },
+                { label: 'Accessories', term: 'men accessories' }
+            ]
+        },
+        {
+            title: "Girls' Wear",
+            items: [
+                { label: 'T-Shirts', term: 'women t-shirt' },
+                { label: 'Hoodies', term: 'women hoodie' },
+                { label: 'Pants', term: 'women pants' },
+                { label: 'Accessories', term: 'women accessories' }
+            ]
+        },
+        {
+            title: "Kids' Wear",
+            items: [
+                { label: 'T-Shirts', term: 'kids t-shirt' },
+                { label: 'Hoodies', term: 'kids hoodie' },
+                { label: 'Pants', term: 'kids pants' },
+                { label: 'Accessories', term: 'kids accessories' }
+            ]
+        }
+    ];
+
     const MINI_CART_ENABLED = false; // disable mini-cart drawer UI
     if (!MINI_CART_ENABLED) {
         document.addEventListener('DOMContentLoaded', () => {
@@ -261,8 +299,14 @@
 
     function setBodyRoute(route) {
         if (!document.body) return;
-        if (route) document.body.setAttribute('data-route', route);
-        else document.body.removeAttribute('data-route');
+        const rootEl = document.documentElement;
+        if (route) {
+            document.body.setAttribute('data-route', route);
+            if (rootEl) rootEl.setAttribute('data-route', route);
+        } else {
+            document.body.removeAttribute('data-route');
+            if (rootEl) rootEl.removeAttribute('data-route');
+        }
     }
 
     // Global error surface so silent script errors (that could block checkout button wiring) are visible
@@ -392,6 +436,7 @@
     function mountHeaderEnhancements() {
         mountCountrySelector();
         mountCustomerHeaderControls();
+        mountHomeMegaMenu();
         mountAdminHeaderControls();
     }
     if (document.readyState === 'loading') {
@@ -439,6 +484,152 @@
             container.appendChild(signInBtn);
             container.appendChild(signUpBtn);
         }
+    }
+
+    function mountHomeMegaMenu() {
+        const header = document.querySelector('.site-header');
+        if (!header) return;
+        const homeLink = header.querySelector('.nav-link[data-route="home"]');
+        if (!homeLink) return;
+
+        const linkId = homeLink.id || 'nav-home-link';
+        if (!homeLink.id) homeLink.id = linkId;
+        homeLink.setAttribute('aria-haspopup', 'true');
+        homeLink.setAttribute('aria-controls', 'home-mega-menu');
+        homeLink.setAttribute('aria-expanded', header.classList.contains('mega-menu-open') ? 'true' : 'false');
+
+        let menu = document.getElementById('home-mega-menu');
+        if (!menu) {
+            menu = el('div', {
+                class: 'home-mega-menu',
+                attrs: {
+                    id: 'home-mega-menu',
+                    role: 'group',
+                    'aria-hidden': 'true',
+                    'aria-labelledby': linkId,
+                    tabindex: '-1'
+                }
+            });
+            header.appendChild(menu);
+        } else {
+            menu.setAttribute('aria-labelledby', linkId);
+        }
+
+        menu.innerHTML = '';
+        const inner = el('div', { class: 'home-mega-menu-inner' });
+        const columnsWrap = el('div', { class: 'home-mega-menu-columns' });
+
+        CATALOG_PREVIEW_FILTERS.forEach(section => {
+            const column = el('div', { class: 'home-mega-menu-column' },
+                el('h3', { class: 'catalog-preview-heading' }, section.title)
+            );
+            const links = el('ul', { class: 'catalog-preview-links' });
+            section.items.forEach(item => {
+                const btn = el('button', {
+                    class: 'catalog-preview-link',
+                    attrs: { type: 'button', 'data-term': item.term }
+                }, item.label);
+                btn.addEventListener('click', (evt) => {
+                    evt.preventDefault();
+                    closeNow();
+                    state.pendingCatalogSearchTerm = item.term;
+                    navigate('catalog');
+                });
+                links.appendChild(el('li', {}, btn));
+            });
+            column.appendChild(links);
+            columnsWrap.appendChild(column);
+        });
+
+        inner.appendChild(columnsWrap);
+
+        menu.appendChild(inner);
+
+        let hideTimer = null;
+
+    const isPointerInside = () => homeLink.matches(':hover') || menu.matches(':hover');
+
+        const hasFocusInside = () => {
+            const active = document.activeElement;
+            return !!active && (menu.contains(active) || active === homeLink);
+        };
+
+        const openMenu = () => {
+            clearTimeout(hideTimer);
+            header.classList.add('mega-menu-open');
+            menu.setAttribute('aria-hidden', 'false');
+            homeLink.setAttribute('aria-expanded', 'true');
+        };
+
+        const closeNow = () => {
+            clearTimeout(hideTimer);
+            header.classList.remove('mega-menu-open');
+            menu.setAttribute('aria-hidden', 'true');
+            homeLink.setAttribute('aria-expanded', 'false');
+        };
+
+        const scheduleClose = () => {
+            clearTimeout(hideTimer);
+            hideTimer = setTimeout(() => {
+                if (isPointerInside() || hasFocusInside()) return;
+                closeNow();
+            }, 140);
+        };
+
+        const bindHoverHandlers = (el) => {
+            el.addEventListener('pointerenter', openMenu);
+            el.addEventListener('pointerleave', scheduleClose);
+            el.addEventListener('focusin', openMenu);
+            el.addEventListener('focusout', scheduleClose);
+        };
+
+        if (!homeLink.dataset.megaMenuWired) {
+            bindHoverHandlers(homeLink);
+            homeLink.addEventListener('keydown', (evt) => {
+                if (evt.key === 'ArrowDown') {
+                    evt.preventDefault();
+                    openMenu();
+                    const firstInteractive = menu.querySelector('button.catalog-preview-link');
+                    if (firstInteractive) firstInteractive.focus();
+                }
+            });
+            homeLink.dataset.megaMenuWired = 'true';
+        }
+
+        if (!menu.dataset.hoverBound) {
+            bindHoverHandlers(menu);
+            menu.dataset.hoverBound = 'true';
+        }
+
+        menu.addEventListener('keydown', (evt) => {
+            if (evt.key === 'Escape') {
+                evt.preventDefault();
+                closeNow();
+                homeLink.focus();
+            }
+        });
+
+        if (!menu._escListener) {
+            menu._escListener = (evt) => {
+                if (evt.key === 'Escape' && header.classList.contains('mega-menu-open')) {
+                    closeNow();
+                    homeLink.focus();
+                }
+            };
+            document.addEventListener('keydown', menu._escListener);
+        }
+
+        menu.querySelectorAll('button.catalog-preview-link').forEach(btn => {
+            btn.addEventListener('focus', openMenu);
+        });
+
+        menu.querySelectorAll('[data-route="catalog"]').forEach(elm => {
+            elm.addEventListener('click', () => {
+                requestAnimationFrame(closeNow);
+            });
+        });
+
+        closeNow();
     }
 
     function normalizeAdminProfile(value) {
@@ -1616,43 +1807,13 @@
         navigate(route, id ? { id } : {});
     });
 
-    const CATALOG_PREVIEW_FILTERS = [
-        {
-            title: "Men's Wear",
-            items: [
-                { label: 'T-Shirts', term: 'men t-shirt' },
-                { label: 'Hoodies', term: 'men hoodie' },
-                { label: 'Pants', term: 'men pants' },
-                { label: 'Accessories', term: 'men accessories' }
-            ]
-        },
-        {
-            title: "Girls' Wear",
-            items: [
-                { label: 'T-Shirts', term: 'women t-shirt' },
-                { label: 'Hoodies', term: 'women hoodie' },
-                { label: 'Pants', term: 'women pants' },
-                { label: 'Accessories', term: 'women accessories' }
-            ]
-        },
-        {
-            title: "Kids' Wear",
-            items: [
-                { label: 'T-Shirts', term: 'kids t-shirt' },
-                { label: 'Hoodies', term: 'kids hoodie' },
-                { label: 'Pants', term: 'kids pants' },
-                { label: 'Accessories', term: 'kids accessories' }
-            ]
-        }
-    ];
-
     /* ----------------------------
      * RENDER: Home
      * ---------------------------- */
 
     function renderHome() {
         rootEl.innerHTML = '';
-        const hero = el('section', { class: 'hero-section' },
+    const hero = el('section', { class: 'hero-section snap-section' },
             el('div', { class: 'hero-eyebrow' }, 'Original apparel'),
             el('h1', { class: 'hero-title' },
                 el('span', { class: 'hero-gradient-text' }, 'Premium Tees'), ' Crafted with Simplicity.'
@@ -1666,61 +1827,176 @@
         );
 
         rootEl.appendChild(hero);
-        // Inline catalog preview appended on home (scroll down to view)
-        const previewHeader = el('h2', { class: 'home-catalog-heading mt-lg' }, 'Catalog Preview');
-    const previewWrap = el('div', { class: 'home-catalog-preview mt-md filters-visible', attrs: { 'data-has-filters': 'true' } });
-    const topRow = el('div', { class: 'catalog-preview-top' });
-    const filterPanel = el('div', { class: 'catalog-preview-filters', attrs: { 'aria-hidden': 'false' } });
-        CATALOG_PREVIEW_FILTERS.forEach(section => {
-            const col = el('div', { class: 'catalog-preview-column' },
-                el('h3', { class: 'catalog-preview-heading' }, section.title)
-            );
-            const links = el('ul', { class: 'catalog-preview-links' });
-            section.items.forEach(item => {
-                const btn = el('button', { class: 'catalog-preview-link', attrs: { type: 'button' } }, item.label);
-                btn.addEventListener('click', (evt) => {
-                    evt.preventDefault();
-                    state.pendingCatalogSearchTerm = item.term;
-                    navigate('catalog');
-                });
-                links.appendChild(el('li', {}, btn));
-            });
-            col.appendChild(links);
-            filterPanel.appendChild(col);
-        });
-        topRow.appendChild(filterPanel);
-        const searchWrap = el('div', { class: 'catalog-preview-search favorites-search' },
-            el('input', {
-                class: 'catalog-preview-search-input favorites-search-input',
-                attrs: { type: 'search', placeholder: 'Search catalog…', id: 'home-catalog-search' }
-            })
+
+        const makeFeatureStat = (value, label) => el('div', { class: 'hero-feature-stat' },
+            el('span', { class: 'stat-value' }, value),
+            el('span', { class: 'stat-label' }, label)
         );
-        topRow.appendChild(searchWrap);
+        const featureTags = ['Classic tees', 'Essential picks', 'Breathable cotton', 'New drops'];
+
+    const heroFeature = el('section', { class: 'hero-feature-band mt-lg snap-section' },
+            el('video', {
+                class: 'hero-feature-video',
+                attrs: {
+                    autoplay: '',
+                    muted: '',
+                    loop: '',
+                    playsinline: '',
+                    preload: 'auto',
+                    poster: '/uploads/6a0e3f98-67be-46ce-be31-cafb591885d5.avif',
+                    'aria-hidden': 'true'
+                }
+            },
+                el('source', {
+                    attrs: {
+                        src: '/uploads/videoplayback.mp4',
+                        type: 'video/mp4'
+                    }
+                }),
+                'Your browser does not support the video tag.'
+            ),
+            el('div', { class: 'hero-feature-overlay' },
+                el('span', { class: 'feature-eyebrow' }, 'Season 07 · Daily Essentials'),
+                el('h2', { class: 'feature-title' }, 'Refresh Your Everyday Rotation'),
+                el('p', { class: 'feature-blurb' }, 'Discover breathable staples built to flex with your day. Explore balanced color stories and premium cotton blends curated by our merch team.'),
+                el('div', { class: 'hero-feature-stats' },
+                    makeFeatureStat('7+', 'Catalog entries'),
+                    makeFeatureStat('7', 'New this month'),
+                    makeFeatureStat('5.0★', 'Community score')
+                ),
+                el('div', { class: 'hero-feature-tags' },
+                    featureTags.map((tag) => el('span', { class: 'hero-feature-tag' }, tag))
+                )
+            ),
+            el('span', { class: 'hero-feature-badge' }, 'New drop every Friday')
+        );
+
+        rootEl.appendChild(heroFeature);
+        const featureVideo = heroFeature.querySelector('.hero-feature-video');
+        if (featureVideo) {
+            const markFallback = () => heroFeature.classList.add('video-fallback');
+            featureVideo.addEventListener('error', markFallback);
+            featureVideo.addEventListener('emptied', markFallback);
+            featureVideo.addEventListener('loadeddata', () => heroFeature.classList.remove('video-fallback'));
+            try {
+                featureVideo.muted = true;
+                const playPromise = featureVideo.play();
+                if (playPromise && typeof playPromise.then === 'function') {
+                    playPromise.catch(() => {
+                        featureVideo.setAttribute('data-autoplay-failed', 'true');
+                        featureVideo.removeAttribute('autoplay');
+                        featureVideo.setAttribute('controls', 'true');
+                    });
+                }
+            } catch (err) {
+                featureVideo.setAttribute('data-autoplay-failed', 'true');
+                featureVideo.removeAttribute('autoplay');
+                featureVideo.setAttribute('controls', 'true');
+                markFallback();
+            }
+        }
+        // Inline catalog preview appended on home (scroll down to view)
+    let previewHeader = el('h2', { class: 'home-catalog-heading mt-lg' }, '');
+    previewHeader = null;
+    const previewWrap = el('div', { class: 'home-catalog-preview mt-md' });
+        const topRow = el('div', { class: 'catalog-preview-top' });
+        topRow.appendChild(
+            el('div', { class: 'catalog-preview-summary' },
+                el('p', { class: 'catalog-preview-subhead' }, 'One standout pick, a wallet-friendly option, and a fresh release—curated straight from the catalog.')
+            )
+        );
+
         previewWrap.appendChild(topRow);
-        const searchInput = searchWrap.querySelector('input');
-    const list = el('div', { class: 'home-catalog-grid' });
-    const previewProducts = state.products.filter(p => !p.deletedAt);
-    const MAX_PREVIEW_ITEMS = 8;
+
+        const previewProducts = state.products.filter(p => !p.deletedAt);
+        const SECTION_LIMIT = 4;
+        const usedAcrossSections = new Set();
+
+        const toTimestamp = (val) => {
+            if (!val) return 0;
+            const time = new Date(val).getTime();
+            return Number.isFinite(time) ? time : 0;
+        };
+
+        const bestPickSorter = (a, b) => {
+            const qtyA = a.reviewSummary?.totalQuantity ?? 0;
+            const qtyB = b.reviewSummary?.totalQuantity ?? 0;
+            if (qtyB !== qtyA) return qtyB - qtyA;
+            const ratingA = a.reviewSummary?.average ?? 0;
+            const ratingB = b.reviewSummary?.average ?? 0;
+            if (ratingB !== ratingA) return ratingB - ratingA;
+            const countA = a.reviewSummary?.count ?? 0;
+            const countB = b.reviewSummary?.count ?? 0;
+            if (countB !== countA) return countB - countA;
+            return toTimestamp(b.createdAt) - toTimestamp(a.createdAt);
+        };
+
+        const priceSorter = (a, b) => {
+            const priceA = a.priceCents ?? Number.MAX_SAFE_INTEGER;
+            const priceB = b.priceCents ?? Number.MAX_SAFE_INTEGER;
+            if (priceA !== priceB) return priceA - priceB;
+            return bestPickSorter(a, b);
+        };
+
+        const newestSorter = (a, b) => toTimestamp(b.createdAt) - toTimestamp(a.createdAt);
+
+        const selectTop = (candidates, limit, avoidSet) => {
+            const picks = [];
+            const seen = new Set();
+            const tryCollect = (skipAvoid) => {
+                for (const product of candidates) {
+                    if (!product || picks.length >= limit) break;
+                    if (seen.has(product.id)) continue;
+                    if (!skipAvoid && avoidSet?.has(product.id)) continue;
+                    picks.push(product);
+                    seen.add(product.id);
+                }
+            };
+            tryCollect(false);
+            if (picks.length < limit) tryCollect(true);
+            return picks;
+        };
+
+        const bestCandidates = [...previewProducts].sort(bestPickSorter);
+        const bestPickItems = selectTop(bestCandidates, SECTION_LIMIT, usedAcrossSections);
+        bestPickItems.forEach(p => usedAcrossSections.add(p.id));
+
+        const budgetCandidates = [...previewProducts].sort(priceSorter);
+        const budgetItems = selectTop(budgetCandidates, SECTION_LIMIT, usedAcrossSections);
+        budgetItems.forEach(p => usedAcrossSections.add(p.id));
+
+        const nowMs = Date.now();
+        const THIRTY_DAYS = 1000 * 60 * 60 * 24 * 30;
+        const newReleaseFilter = (p) => {
+            const created = toTimestamp(p.createdAt);
+            return created && (nowMs - created) <= THIRTY_DAYS;
+        };
+        const newReleaseBase = (() => {
+            const within = previewProducts.filter(newReleaseFilter);
+            if (within.length) return within.sort(newestSorter);
+            return [...previewProducts].sort(newestSorter);
+        })();
+        const newReleaseItems = selectTop(newReleaseBase, SECTION_LIMIT, usedAcrossSections);
+        newReleaseItems.forEach(p => usedAcrossSections.add(p.id));
 
         const buildPreviewCard = (p) => {
             const card = el('article', { class: 'home-product-card', attrs: { 'data-product-id': p.id } });
-            card.appendChild(el('div', { class: 'hpc-img-wrap' },
-                el('img', {
-                    attrs: {
-                        src: p.images[0] || 'https://via.placeholder.com/400x320?text=Tee',
-                        loading: 'lazy',
-                        alt: p.title || 'Catalog item'
-                    }
-                })
-            ));
+
+            const imgWrap = el('div', { class: 'hpc-img-wrap' });
+            const primaryImage = Array.isArray(p.images) && p.images.length ? p.images[0] : productPlaceholder(720);
+            imgWrap.appendChild(el('img', { attrs: { src: primaryImage, alt: p.title || 'Product image', loading: 'lazy' } }));
+            card.appendChild(imgWrap);
 
             const body = el('div', { class: 'hpc-body' });
-            body.appendChild(el('h3', { class: 'hpc-title' }, p.title));
+            body.appendChild(el('h3', { class: 'hpc-title' }, p.title || 'Untitled product'));
 
             const meta = el('div', { class: 'hpc-meta' },
-                el('span', { class: 'hpc-price price', attrs: { 'data-price-cents': p.priceCents } }, money(p.priceCents)),
-                el('span', { class: 'hpc-stock' }, `Stock ${productStock(p)}`)
+                el('span', { class: 'hpc-price price', attrs: { 'data-price-cents': p.priceCents || 0 } }, money(p.priceCents || 0))
             );
+
+            const stockCount = productStock(p);
+            const stockLabel = stockCount <= 0 ? 'Out of stock' : stockCount < 5 ? `Low stock (${stockCount})` : `${stockCount} in stock`;
+            meta.appendChild(el('span', { class: 'hpc-stock' }, stockLabel));
             body.appendChild(meta);
 
             if (p.reviewSummary && p.reviewSummary.count > 0) {
@@ -1731,73 +2007,102 @@
 
             const favActive = isFavorite(p.id);
             const actions = el('div', { class: 'hpc-actions' },
-                el('button', { class: 'btn hpc-action-btn hpc-action-view', attrs: { type: 'button', 'data-view-id': p.id } }, 'View'),
-                el('button', { class: 'btn hpc-action-btn hpc-action-add', attrs: { type: 'button', 'data-add': p.id } }, 'Add'),
                 el('button', {
-                    class: 'btn hpc-action-btn hpc-action-fav' + (favActive ? ' active' : ''),
+                    class: 'hpc-action hpc-view',
+                    attrs: { type: 'button', 'data-view-id': p.id }
+                }, 'View'),
+                el('button', {
+                    class: 'hpc-action hpc-add',
+                    attrs: { type: 'button', 'data-add': p.id }
+                }, 'Add'),
+                el('button', {
+                    class: 'hpc-heart' + (favActive ? ' active' : ''),
                     attrs: {
                         type: 'button',
                         'data-fav': p.id,
                         'aria-pressed': favActive ? 'true' : 'false',
-                        title: favActive ? 'Remove from favorites' : 'Add to favorites'
+                        'aria-label': favActive ? 'Remove from favorites' : 'Add to favorites'
                     }
                 }, favActive ? '♥' : '♡')
             );
-            body.appendChild(actions);
 
+            body.appendChild(actions);
             card.appendChild(body);
             return card;
         };
 
-        const renderPreviewCards = (items) => {
-            list.innerHTML = '';
-            const trimmed = items.slice(0, MAX_PREVIEW_ITEMS);
-            if (!trimmed.length) {
-                list.appendChild(el('div', { class: 'muted small', attrs: { style: 'grid-column:1/-1;text-align:center;padding:1rem 0;' } }, 'No matching items in this preview.'));
-                return;
+        const sections = [
+            {
+                key: 'best',
+                title: 'Best Pick',
+                blurb: 'Most purchased with standout reviews.',
+                products: bestPickItems
+            },
+            {
+                key: 'budget',
+                title: 'Budget Friendly',
+                blurb: 'Lowest price without compromising on style.',
+                products: budgetItems
+            },
+            {
+                key: 'new',
+                title: 'New Release',
+                blurb: 'Fresh drop added within the last month.',
+                products: newReleaseItems
             }
-            trimmed.forEach(p => list.appendChild(buildPreviewCard(p)));
-            updateFavoriteIcons(list);
+        ];
+
+        const formatMetrics = (sectionKey, products) => {
+            if (!products || !products.length) return null;
+            const primary = products[0];
+            const bits = [];
+            if (sectionKey === 'best') {
+                const sold = primary.reviewSummary?.totalQuantity ?? 0;
+                if (sold > 0) bits.push(`${sold} bought`);
+                const rating = primary.reviewSummary?.average;
+                if (rating) bits.push(`${rating.toFixed(1)}★ rating`);
+            }
+            if (sectionKey === 'budget') {
+                bits.push('From ' + money(primary.priceCents));
+            }
+            if (sectionKey === 'new') {
+                const created = toTimestamp(primary.createdAt);
+                if (created) bits.push('Added ' + new Date(created).toLocaleDateString());
+            }
+            if (!bits.length) return null;
+            return el('div', { class: 'spotlight-meta' }, bits.join(' • '));
         };
 
-        const applyPreviewSearch = () => {
-            const term = (searchInput?.value || '').trim().toLowerCase();
-            if (!term) {
-                renderPreviewCards(previewProducts);
-                return;
+        const spotlightSections = el('div', { class: 'spotlight-sections' });
+        sections.forEach(section => {
+            const container = el('section', { class: 'spotlight-section' });
+            const header = el('div', { class: 'spotlight-header' },
+                el('div', { class: 'spotlight-title-row' },
+                    el('h3', { class: 'spotlight-title' }, section.title)
+                ),
+                el('p', { class: 'spotlight-desc' }, section.blurb)
+            );
+            const metrics = formatMetrics(section.key, section.products);
+            if (metrics) header.appendChild(metrics);
+            container.appendChild(header);
+
+            if (section.products.length) {
+                const grid = el('div', { class: 'home-catalog-grid spotlight-grid' });
+                section.products.forEach(p => grid.appendChild(buildPreviewCard(p)));
+                container.appendChild(grid);
+            } else {
+                container.appendChild(el('div', { class: 'spotlight-empty muted small' }, 'No qualifying product yet. Check back soon.'));
             }
-            const matches = previewProducts.filter(p => {
-                const title = (p.title || '').toLowerCase();
-                const desc = (p.description || '').toLowerCase();
-                const tags = Array.isArray(p.tags) ? p.tags : [];
-                return title.includes(term) || desc.includes(term) || tags.some(t => (t || '').toLowerCase().includes(term));
-            });
-            renderPreviewCards(matches);
-        };
 
-        if (searchInput && !searchInput._wired) {
-            searchInput._wired = true;
-            searchInput.addEventListener('input', applyPreviewSearch);
-            searchInput.addEventListener('keydown', (evt) => {
-                if (evt.key !== 'Enter') return;
-                evt.preventDefault();
-                const term = searchInput.value.trim();
-                if (!term) return;
-                state.pendingCatalogSearchTerm = term;
-                navigate('catalog');
-            });
-        }
+            spotlightSections.appendChild(container);
+        });
 
-        renderPreviewCards(previewProducts);
-        previewWrap.appendChild(list);
-        const moreBtn = el('div', { class: 'mt-md' }, el('button', { class: 'btn btn-outline', attrs: { 'data-route': 'catalog' } }, 'View Full Catalog'));
-        rootEl.appendChild(previewHeader);
+        previewWrap.appendChild(spotlightSections);
+    const moreBtn = el('div', { class: 'mt-md' }, el('button', { class: 'btn btn-outline', attrs: { 'data-route': 'catalog' } }, 'View Full Catalog'));
+    if (previewHeader) rootEl.appendChild(previewHeader);
         rootEl.appendChild(previewWrap);
         rootEl.appendChild(moreBtn);
 
-        // Filters are always visible; no hover handlers needed
-
-        // Initialize heart states and handle clicks
         updateFavoriteIcons(previewWrap);
         previewWrap.addEventListener('click', e => {
             const favBtn = e.target.closest('[data-fav]');
@@ -1859,7 +2164,7 @@
             list.forEach(p => {
                 const card = el('article', { class: 'favorite-card', attrs: { 'data-id': p.id } },
                     el('div', { class: 'favorite-card-img' },
-                        el('img', { attrs: { src: p.images[0] || 'https://via.placeholder.com/500?text=Item', alt: p.title, loading: 'lazy' } })
+                        el('img', { attrs: { src: p.images[0] || productPlaceholder(640), alt: p.title, loading: 'lazy' } })
                     ),
                     el('button', { class: 'favorite-card-heart', attrs: { type: 'button', 'data-fav': p.id, 'aria-pressed': isFavorite(p.id) ? 'true' : 'false' } }, '♥'),
                     el('div', { class: 'favorite-card-body' },
@@ -1936,8 +2241,275 @@
      * RENDER: Catalog
      * ---------------------------- */
 
+    const ensureCatalogPageStyles = (() => {
+        let injected = false;
+        return () => {
+            if (injected) return;
+            injected = true;
+            const style = document.createElement('style');
+            style.id = 'catalog-hero-style';
+            style.textContent = `
+.catalog-hero {
+    max-width: min(1120px, 92vw);
+    margin: 0 auto 2.75rem;
+    padding: clamp(2.6rem, 2rem + 4vw, 3.6rem);
+    border-radius: 32px;
+    position: relative;
+    overflow: hidden;
+    color: #f8fafc;
+    background: radial-gradient(circle at 12% 88%, rgba(244, 114, 182, 0.22), transparent 55%), radial-gradient(circle at 85% 12%, rgba(56, 189, 248, 0.25), transparent 45%), linear-gradient(135deg, #0f172a 0%, #1d4ed8 58%, #6366f1 100%);
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+    gap: clamp(2rem, 3vw, 3.5rem);
+    box-shadow: 0 40px 90px -60px rgba(15, 23, 42, 0.72);
+}
+.catalog-hero::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at 25% 20%, rgba(255, 255, 255, 0.12), transparent 52%);
+    pointer-events: none;
+    mix-blend-mode: screen;
+    opacity: 0.7;
+}
+.catalog-hero-content {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 1.4rem;
+    z-index: 1;
+}
+.catalog-hero-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.45rem 0.75rem;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.4);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+.catalog-hero-title {
+    font-size: clamp(2.5rem, 1.8rem + 2vw, 3.2rem);
+    font-weight: 700;
+    line-height: 1.05;
+    letter-spacing: -0.03em;
+    margin: 0;
+}
+.catalog-hero-copy {
+    margin: 0;
+    font-size: 1rem;
+    line-height: 1.6;
+    color: rgba(241, 245, 249, 0.88);
+    max-width: 520px;
+}
+.catalog-hero-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.25rem;
+}
+.catalog-hero-stat {
+    min-width: 140px;
+    padding: 0.75rem 1rem;
+    border-radius: 16px;
+    background: rgba(15, 23, 42, 0.48);
+    backdrop-filter: blur(14px);
+    box-shadow: 0 18px 38px -28px rgba(15, 23, 42, 0.65);
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}
+.catalog-hero-stat .stat-value {
+    font-size: 1.45rem;
+    font-weight: 700;
+    color: #f8fafc;
+}
+.catalog-hero-stat .stat-label {
+    font-size: 0.75rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(241, 245, 249, 0.7);
+}
+.catalog-hero-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    margin-top: 0.2rem;
+}
+.catalog-hero-filter {
+    border: 1px solid rgba(248, 250, 252, 0.35);
+    background: rgba(15, 23, 42, 0.4);
+    color: #f8fafc;
+    padding: 0.55rem 0.85rem;
+    border-radius: 12px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+.catalog-hero-filter:hover,
+.catalog-hero-filter:focus-visible,
+.catalog-hero-filter.active {
+    outline: none;
+    border-color: rgba(248, 250, 252, 0.8);
+    background: rgba(248, 250, 252, 0.12);
+    transform: translateY(-1px);
+}
+.catalog-hero-media {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.catalog-hero-frame {
+    position: relative;
+    border-radius: 26px;
+    padding: 0.65rem;
+    background: linear-gradient(160deg, rgba(255, 255, 255, 0.35), rgba(255, 255, 255, 0.05));
+    box-shadow: 0 42px 90px -55px rgba(15, 23, 42, 0.7);
+    backdrop-filter: blur(12px);
+}
+.catalog-hero-frame img {
+    display: block;
+    width: min(100%, 420px);
+    border-radius: 20px;
+    object-fit: cover;
+}
+.catalog-hero-tag {
+    position: absolute;
+    bottom: 6%;
+    right: 8%;
+    padding: 0.5rem 1rem;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.65);
+    color: #f8fafc;
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    box-shadow: 0 16px 32px -28px rgba(15, 23, 42, 0.7);
+}
+@media (max-width: 960px) {
+    .catalog-hero {
+        grid-template-columns: 1fr;
+        padding: clamp(2.3rem, 5vw, 3rem);
+        gap: 2.4rem;
+    }
+    .catalog-hero-media {
+        justify-content: flex-start;
+    }
+    .catalog-hero-frame img {
+        width: 100%;
+        max-width: 480px;
+    }
+    .catalog-hero-tag {
+        bottom: auto;
+        top: 8%;
+        right: 6%;
+    }
+}
+@media (max-width: 640px) {
+    .catalog-hero {
+        border-radius: 24px;
+    }
+    .catalog-hero-stats {
+        gap: 0.85rem;
+    }
+    .catalog-hero-stat {
+        min-width: calc(50% - 0.5rem);
+    }
+    .catalog-hero-tag {
+        position: static;
+        align-self: flex-start;
+        margin-top: 1rem;
+    }
+}
+`;
+            document.head?.appendChild(style);
+        };
+    })();
+
     function renderCatalog() {
+        ensureCatalogPageStyles();
         rootEl.innerHTML = '';
+
+        const availableProducts = state.products.filter(p => !p.deletedAt);
+        const baseProducts = availableProducts.slice();
+        const weightedRating = availableProducts.reduce((acc, product) => {
+            const summary = product.reviewSummary;
+            if (summary && summary.count > 0 && typeof summary.average === 'number') {
+                acc.sum += summary.average * summary.count;
+                acc.count += summary.count;
+            }
+            return acc;
+        }, { sum: 0, count: 0 });
+        const averageRating = weightedRating.count ? weightedRating.sum / weightedRating.count : null;
+        const averageRatingLabel = averageRating ? `${averageRating.toFixed(1)}★` : 'First look';
+        const THIRTY_DAYS = 1000 * 60 * 60 * 24 * 30;
+        const now = Date.now();
+        const newDropCount = availableProducts.filter(product => {
+            const created = new Date(product.createdAt || '').getTime();
+            return Number.isFinite(created) && (now - created) <= THIRTY_DAYS;
+        }).length;
+
+        const quickFilterConfig = [
+            { label: 'Classic tees', term: 'classic' },
+            { label: 'Essential picks', term: 'essential' },
+            { label: 'Breathable cotton', term: 'cotton' },
+            { label: 'New drops', term: 'new' }
+        ];
+
+        const heroSection = el('section', { class: 'catalog-hero' },
+            el('div', { class: 'catalog-hero-content' },
+                el('span', { class: 'catalog-hero-badge' }, 'Season 07 · Daily Essentials'),
+                el('h1', { class: 'catalog-hero-title' }, 'Refresh Your Everyday Rotation'),
+                el('p', { class: 'catalog-hero-copy' }, 'Discover breathable staples built to flex with your day. Explore balanced color stories and premium cotton blends curated by our merch team.'),
+                el('div', { class: 'catalog-hero-stats' },
+                    el('div', { class: 'catalog-hero-stat' },
+                        el('span', { class: 'stat-value' }, `${availableProducts.length}+`),
+                        el('span', { class: 'stat-label' }, 'Catalog entries')
+                    ),
+                    el('div', { class: 'catalog-hero-stat' },
+                        el('span', { class: 'stat-value' }, newDropCount ? `${newDropCount}` : 'Fresh'),
+                        el('span', { class: 'stat-label' }, newDropCount ? 'New this month' : 'Weekly refresh')
+                    ),
+                    el('div', { class: 'catalog-hero-stat' },
+                        el('span', { class: 'stat-value' }, averageRatingLabel),
+                        el('span', { class: 'stat-label' }, 'Community score')
+                    )
+                ),
+                el('div', { class: 'catalog-hero-filters' },
+                    ...quickFilterConfig.map(filter => el('button', {
+                        class: 'catalog-hero-filter',
+                        attrs: { type: 'button', 'data-term': filter.term }
+                    }, filter.label))
+                )
+            ),
+            el('div', { class: 'catalog-hero-media' },
+                el('div', { class: 'catalog-hero-frame' },
+                    el('img', {
+                        attrs: {
+                            src: productPlaceholder(1080),
+                            alt: 'Folded cotton tees in gradient tones',
+                            loading: 'lazy'
+                        }
+                    })
+                ),
+                el('div', { class: 'catalog-hero-tag' }, 'New drop every Friday')
+            )
+        );
+        rootEl.appendChild(heroSection);
+
+        const heroFilters = Array.from(heroSection.querySelectorAll('.catalog-hero-filter[data-term]'));
+        const syncHeroFilters = (normalizedTerm) => {
+            const activeTerm = (normalizedTerm || '').trim();
+            heroFilters.forEach(btn => {
+                const btnTerm = (btn.getAttribute('data-term') || '').toLowerCase();
+                btn.classList.toggle('active', !!activeTerm && activeTerm === btnTerm);
+            });
+        };
+
         const panel = el('section', { class: 'panel catalog-panel' });
         const panelBody = el('div', { class: 'catalog-panel-body' });
         const header = el('div', { class: 'catalog-header' },
@@ -1965,29 +2537,18 @@
         const searchForm = header.querySelector('#catalog-search-form');
         const searchInput = header.querySelector('#catalog-search-input');
 
-        // Carousel skeleton
-        const wrap = el('div', { class: 'carousel-wrapper catalog-carousel' });
-        const viewport = el('div', { class: 'carousel-viewport' });
-        const track = el('div', { class: 'carousel-track', attrs: { id: 'carousel-track' } });
-        viewport.appendChild(track);
-        const btnPrev = el('button', { class: 'carousel-nav-btn carousel-nav-prev', attrs: { id: 'carousel-prev', type: 'button', 'aria-label': 'Previous products' } }, '‹');
-        const btnNext = el('button', { class: 'carousel-nav-btn carousel-nav-next', attrs: { id: 'carousel-next', type: 'button', 'aria-label': 'Next products' } }, '›');
-        wrap.appendChild(viewport);
-        wrap.appendChild(btnPrev);
-        wrap.appendChild(btnNext);
-    panelBody.appendChild(wrap);
+        const grid = el('div', { class: 'catalog-grid' });
+        panelBody.appendChild(grid);
 
-        let productsShown = state.products.filter(p => !p.deletedAt).slice();
-        let index = 0; // center index
+        let productsShown = baseProducts.slice();
 
-        function buildItem(p, i) {
-            const container = el('div', { class: 'carousel-item', attrs: { 'data-id': p.id, 'data-idx': String(i) } });
-            const card = el('article', { class: 'product-card catalog-card' });
+        function buildCard(p) {
+            const card = el('article', { class: 'product-card catalog-card', attrs: { 'data-id': p.id } });
 
             const media = el('div', { class: 'catalog-card-media' },
                 el('img', {
                     attrs: {
-                        src: p.images && p.images[0] ? p.images[0] : 'https://via.placeholder.com/400?text=Tee',
+                        src: p.images && p.images[0] ? p.images[0] : productPlaceholder(640),
                         alt: p.title,
                         loading: 'lazy'
                     }
@@ -2024,61 +2585,24 @@
                 }, favActive ? '♥' : '♡')
             );
             card.appendChild(actions);
-            container.appendChild(card);
-            return container;
+
+            return card;
         }
 
         function renderItems() {
-            track.innerHTML = '';
+            grid.innerHTML = '';
             if (!productsShown.length) {
-                index = 0;
-                track.classList.add('is-empty');
-                track.appendChild(el('div', { class: 'catalog-empty-state' }, 'No products match your search right now.'));
-                btnPrev.classList.add('disabled');
-                btnNext.classList.add('disabled');
+                grid.classList.add('is-empty');
+                grid.appendChild(el('div', { class: 'catalog-empty-state' }, 'No products match your search right now.'));
+                updateFavoriteIcons(panel);
                 return;
             }
-            track.classList.remove('is-empty');
-            productsShown.forEach((p, i) => track.appendChild(buildItem(p, i)));
-            index = Math.max(0, Math.min(index, productsShown.length - 1));
-            centerOn(index, false);
+            grid.classList.remove('is-empty');
+            productsShown.forEach(p => grid.appendChild(buildCard(p)));
             updateFavoriteIcons(panel);
         }
 
-        function updateClasses() {
-            const items = track.querySelectorAll('.carousel-item');
-            items.forEach(it => {
-                it.classList.remove('mid', 'near');
-                const i = parseInt(it.getAttribute('data-idx'), 10);
-                if (i === index) it.classList.add('mid');
-                else if (Math.abs(i - index) === 1) it.classList.add('near');
-            });
-        }
-
-        function updateNav() {
-            if (index <= 0) btnPrev.classList.add('disabled'); else btnPrev.classList.remove('disabled');
-            if (index >= productsShown.length - 1) btnNext.classList.add('disabled'); else btnNext.classList.remove('disabled');
-        }
-
-        function centerOn(i, animate = true) {
-            index = Math.max(0, Math.min(productsShown.length - 1, i));
-            const itemWidth = track.querySelector('.carousel-item')?.getBoundingClientRect().width || 260;
-            const gap = parseFloat(getComputedStyle(track).gap) || 0;
-            const totalItemSpace = itemWidth + gap;
-            const offset = (index * totalItemSpace);
-            const viewportWidth = viewport.getBoundingClientRect().width;
-            const centerAdjust = (viewportWidth - itemWidth) / 2;
-            track.style.transition = animate ? '' : 'none';
-            track.style.transform = `translateX(${centerAdjust - offset}px)`;
-            if (!animate) requestAnimationFrame(() => { track.style.transition = ''; });
-            updateClasses();
-            updateNav();
-        }
-
-        btnPrev.addEventListener('click', () => centerOn(index - 1));
-        btnNext.addEventListener('click', () => centerOn(index + 1));
-
-        track.addEventListener('click', e => {
+        grid.addEventListener('click', (e) => {
             const favBtn = e.target.closest('[data-fav]');
             if (favBtn) {
                 e.preventDefault();
@@ -2094,38 +2618,40 @@
             const viewBtn = e.target.closest('[data-view-id]');
             if (viewBtn) {
                 navigate('product', { id: viewBtn.getAttribute('data-view-id') });
-                return;
-            }
-            const item = e.target.closest('.carousel-item');
-            if (item) {
-                const idx = parseInt(item.getAttribute('data-idx'), 10);
-                if (idx !== index) centerOn(idx); else navigate('product', { id: item.getAttribute('data-id') });
             }
         });
-
-        // Keyboard support
-        panel.addEventListener('keydown', e => {
-            if (e.key === 'ArrowLeft') { centerOn(index - 1); }
-            else if (e.key === 'ArrowRight') { centerOn(index + 1); }
-        });
-        panel.tabIndex = 0; // focusable
 
         const runSearch = () => {
-            const term = (searchInput?.value || '').trim().toLowerCase();
-            if (!term) {
-                productsShown = state.products.filter(p => !p.deletedAt).slice();
+            const normalizedTerm = (searchInput?.value || '').trim().toLowerCase();
+            if (!normalizedTerm) {
+                productsShown = baseProducts.slice();
             } else {
-                productsShown = state.products.filter(p => {
-                    if (p.deletedAt) return false;
+                productsShown = baseProducts.filter(p => {
                     const title = (p.title || '').toLowerCase();
                     const desc = (p.description || '').toLowerCase();
                     const tags = Array.isArray(p.tags) ? p.tags : [];
-                    return title.includes(term) || desc.includes(term) || tags.some(t => (t || '').toLowerCase().includes(term));
+                    return title.includes(normalizedTerm) || desc.includes(normalizedTerm) || tags.some(t => (t || '').toLowerCase().includes(normalizedTerm));
                 });
             }
-            index = 0;
             renderItems();
+            syncHeroFilters(normalizedTerm);
         };
+
+        heroFilters.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const term = btn.getAttribute('data-term') || '';
+                if (searchInput) {
+                    searchInput.value = term;
+                    runSearch();
+                    try { searchInput.focus(); } catch { /* no-op */ }
+                } else {
+                    state.pendingCatalogSearchTerm = term;
+                }
+                if (typeof panel.scrollIntoView === 'function') {
+                    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            });
+        });
 
         searchForm?.addEventListener('submit', (e) => {
             e.preventDefault();
@@ -2138,6 +2664,7 @@
 
         // Initial render
         renderItems();
+        syncHeroFilters((searchInput?.value || '').trim().toLowerCase());
         if (state.pendingCatalogSearchTerm) {
             const term = state.pendingCatalogSearchTerm;
             state.pendingCatalogSearchTerm = '';
@@ -2147,7 +2674,6 @@
                 try { searchInput.focus(); } catch { /* no-op */ }
             }
         }
-        window.addEventListener('resize', () => centerOn(index, false));
     }
 
     function productStock(p) {
@@ -2172,7 +2698,7 @@
         rootEl.innerHTML = '';
         let selectedVariant = null;
         // Gallery
-    const images = (prod.images && prod.images.length ? prod.images : ['https://via.placeholder.com/800?text=Item']);
+    const images = (prod.images && prod.images.length ? prod.images : [productPlaceholder(1024)]);
     const hasMultipleImages = images.length > 1;
         let currentIdx = 0;
         const mainImg = el('img', { class: 'pd-main-img', attrs: { src: images[0], alt: prod.title, loading: 'eager' } });
@@ -2273,7 +2799,7 @@
         if (related.length) {
             const relWrap = el('div', { class: 'related mt-lg' }, el('h3', { class: 'h5' }, 'Related Items'),
                 el('div', { class: 'related-grid' }, ...related.map(r => el('div', { class: 'related-card', attrs: { 'data-rel-id': r.id } },
-                    el('img', { attrs: { src: (Array.isArray(r.images) && r.images.length ? r.images[0] : 'https://via.placeholder.com/200?text=Item'), alt: r.title, loading: 'lazy' } }),
+                    el('img', { attrs: { src: (Array.isArray(r.images) && r.images.length ? r.images[0] : productPlaceholder(360)), alt: r.title, loading: 'lazy' } }),
                     el('div', { class: 'rc-body' }, el('div', { class: 'rc-title tiny' }, r.title), el('div', { class: 'rc-price tiny', attrs: { 'data-price-cents': r.priceCents } }, money(r.priceCents)))
                 ))));
             rootEl.appendChild(relWrap);
@@ -2288,7 +2814,7 @@
         if (recents.length) {
             const rvWrap = el('div', { class: 'recently-viewed mt-lg' }, el('h3', { class: 'h5' }, 'Recently Viewed'),
                 el('div', { class: 'rv-grid' }, ...recents.map(r => el('div', { class: 'rv-item', attrs: { 'data-rv-id': r.id } },
-                    el('img', { attrs: { src: (r.images && r.images[0]) || 'https://via.placeholder.com/160?text=Item', alt: r.title, loading: 'lazy' } })
+                    el('img', { attrs: { src: (r.images && r.images[0]) || productPlaceholder(320), alt: r.title, loading: 'lazy' } })
                 ))));
             rootEl.appendChild(rvWrap);
             rvWrap.addEventListener('click', e => { const c = e.target.closest('[data-rv-id]'); if (c) showProductDetail(c.getAttribute('data-rv-id')); });
@@ -3428,6 +3954,18 @@
             return;
         }
         rootEl.innerHTML = '';
+        const sectionDefs = [
+            { key: 'products', label: 'Products' },
+            { key: 'orders', label: 'Orders' },
+            { key: 'reviews', label: 'Reviews Moderation' },
+            { key: 'discounts', label: 'Discounts' },
+            { key: 'low-stock', label: 'Low Stock' },
+            { key: 'export', label: 'Export / Import' }
+        ];
+        if (!sectionDefs.some(def => def.key === state.admin.activePanel)) {
+            state.admin.activePanel = 'products';
+        }
+
         const panel = el('section', { class: 'panel' },
             el('div', { class: 'panel-header' },
                 el('span', {}, 'Admin Panel'),
@@ -3438,7 +3976,44 @@
                 )
             )
         );
+
+        const filterBar = el('div', { class: 'admin-section-filter mt-sm', attrs: { role: 'tablist', 'aria-label': 'Admin sections' } });
+        const sectionButtons = [];
+        const sectionRefs = new Map();
+
+        function syncAdminSectionFilter() {
+            const fallback = sectionDefs[0]?.key || 'products';
+            const activeKey = sectionDefs.some(def => def.key === state.admin.activePanel) ? state.admin.activePanel : fallback;
+            state.admin.activePanel = activeKey;
+            sectionButtons.forEach(btn => {
+                const match = btn.getAttribute('data-section') === activeKey;
+                btn.classList.toggle('active', match);
+                btn.setAttribute('aria-pressed', match ? 'true' : 'false');
+            });
+            sectionRefs.forEach((node, key) => {
+                if (!node) return;
+                if (key === activeKey) node.classList.remove('hidden');
+                else node.classList.add('hidden');
+            });
+        }
+
+        sectionDefs.forEach(({ key, label }) => {
+            const btn = el('button', {
+                class: 'admin-section-btn',
+                attrs: { type: 'button', 'data-section': key }
+            }, label);
+            btn.addEventListener('click', () => {
+                if (state.admin.activePanel !== key) {
+                    state.admin.activePanel = key;
+                    syncAdminSectionFilter();
+                }
+            });
+            filterBar.appendChild(btn);
+            sectionButtons.push(btn);
+        });
+        panel.appendChild(filterBar);
         rootEl.appendChild(panel);
+        syncAdminSectionFilter();
 
         const newBtn = panel.querySelector('#new-product');
         if (newBtn) {
@@ -3450,8 +4025,7 @@
                 clearAdminAuth(true);
             });
         }
-
-        const prodWrap = el('div', { class: 'panel mt-md' },
+        const prodWrap = el('div', { class: 'panel mt-md', attrs: { 'data-admin-section': 'products' } },
             el('div', { class: 'panel-header' },
                 el('span', {}, 'Products'),
                 el('div', { class: 'inline-fields' },
@@ -3465,6 +4039,7 @@
             el('div', { class: 'admin-table-wrapper' }, el('table', { class: 'admin-table', attrs: { id: 'admin-products-table' } }))
         );
         rootEl.appendChild(prodWrap);
+        sectionRefs.set('products', prodWrap);
         // Wire show deleted toggle (soft-deleted products)
         const showDeletedCb = prodWrap.querySelector('#toggle-show-deleted');
         if (showDeletedCb) {
@@ -3480,7 +4055,7 @@
             }
         }
 
-        const ordersWrap = el('div', { class: 'panel mt-md' },
+        const ordersWrap = el('div', { class: 'panel mt-md', attrs: { 'data-admin-section': 'orders' } },
             el('div', { class: 'panel-header' },
                 el('span', {}, 'Orders'),
                 el('div', { class: 'inline-fields' },
@@ -3490,8 +4065,9 @@
             el('div', { class: 'admin-table-wrapper' }, el('table', { class: 'admin-table', attrs: { id: 'admin-orders-table' } }))
         );
         rootEl.appendChild(ordersWrap);
+        sectionRefs.set('orders', ordersWrap);
 
-        const reviewsPanel = el('div', { class: 'panel mt-md' },
+        const reviewsPanel = el('div', { class: 'panel mt-md', attrs: { 'data-admin-section': 'reviews' } },
             el('div', { class: 'panel-header' },
                 el('span', {}, 'Reviews Moderation'),
                 el('div', { class: 'inline-fields' },
@@ -3506,6 +4082,7 @@
             el('div', { class: 'admin-table-wrapper' }, el('table', { class: 'admin-table', attrs: { id: 'admin-reviews-table' } }))
         );
         rootEl.appendChild(reviewsPanel);
+        sectionRefs.set('reviews', reviewsPanel);
 
         const reviewFilter = reviewsPanel.querySelector('#admin-review-filter');
         if (reviewFilter) {
@@ -3529,17 +4106,20 @@
             });
         }
 
-        const discountPanel = el('div', { class: 'panel mt-md' },
+        const discountPanel = el('div', { class: 'panel mt-md', attrs: { 'data-admin-section': 'discounts' } },
             el('div', { class: 'panel-header' }, el('span', {}, 'Discounts'), el('div', { class: 'inline-fields' }, el('button', { class: 'btn btn-small btn-outline', attrs: { id: 'new-discount-btn' } }, 'New'))),
             el('div', { class: 'admin-table-wrapper' }, el('table', { class: 'admin-table', attrs: { id: 'admin-discounts-table' } }))
         );
         rootEl.appendChild(discountPanel);
-        const lowStockPanel = el('div', { class: 'panel mt-md' },
+        sectionRefs.set('discounts', discountPanel);
+
+        const lowStockPanel = el('div', { class: 'panel mt-md', attrs: { 'data-admin-section': 'low-stock' } },
             el('div', { class: 'panel-header' }, el('span', {}, 'Low Stock'), el('div', { class: 'inline-fields' }, el('input', { attrs: { id: 'low-stock-threshold', type: 'number', value: '5', min: '1', style: 'width:4rem;' } }), el('button', { class: 'btn btn-small', attrs: { id: 'low-stock-refresh' } }, 'Refresh'))),
             el('div', { class: 'admin-table-wrapper' }, el('table', { class: 'admin-table', attrs: { id: 'low-stock-table' } }))
         );
         rootEl.appendChild(lowStockPanel);
-        const exportPanel = el('div', { class: 'panel mt-md' },
+        sectionRefs.set('low-stock', lowStockPanel);
+        const exportPanel = el('div', { class: 'panel mt-md', attrs: { 'data-admin-section': 'export' } },
             el('div', { class: 'panel-header' }, el('span', {}, 'Export / Import')),
             el('div', { class: 'flex flex-col gap-sm p-sm' },
                 el('div', {}, el('a', { attrs: { href: '/api/export/products.csv', target: '_blank' } }, 'Download Products CSV'), ' | ', el('a', { attrs: { href: '/api/export/orders.csv', target: '_blank' } }, 'Download Orders CSV')),
@@ -3551,6 +4131,9 @@
             )
         );
         rootEl.appendChild(exportPanel);
+        sectionRefs.set('export', exportPanel);
+
+        syncAdminSectionFilter();
 
         // Initial data load (products + orders) then tables
         (async () => { await refreshAdminData(); })();
@@ -3560,6 +4143,16 @@
     function refreshAdminTables() {
         // Products table
         const pt = document.getElementById('admin-products-table');
+        const buildProductActionsCell = (product, deletedView) => {
+            const editBtn = el('button', { class: 'btn btn-compact btn-outline', attrs: { 'data-edit': product.id } }, 'Edit');
+            const secondaryBtn = deletedView
+                ? el('button', { class: 'btn btn-compact btn-success', attrs: { 'data-restore': product.id } }, 'Restore')
+                : el('button', { class: 'btn btn-compact btn-danger', attrs: { 'data-del': product.id } }, 'Delete');
+            const stackClass = deletedView ? 'admin-actions-stack admin-actions-stack--restore' : 'admin-actions-stack';
+            return el('td', { class: 'admin-actions-cell' },
+                el('div', { class: stackClass }, editBtn, secondaryBtn)
+            );
+        };
         if (pt) {
             pt.innerHTML = `
                 <thead>
@@ -3580,15 +4173,6 @@
             for (const p of state.products) {
                 // When showDeletedMode is true, show only deleted products (history). Otherwise only active.
                 if (showDeletedMode) { if (!p.deletedAt) continue; } else { if (p.deletedAt) continue; }
-                const actions = el('td', {});
-                actions.appendChild(el('button', { class: 'btn btn-small btn-outline', attrs: { 'data-edit': p.id } }, 'Edit'));
-                actions.appendChild(document.createTextNode(' '));
-                if (showDeletedMode) {
-                    // Only deleted view gets restore buttons
-                    actions.appendChild(el('button', { class: 'btn btn-small btn-outline', attrs: { 'data-restore': p.id } }, 'Restore'));
-                } else {
-                    actions.appendChild(el('button', { class: 'btn btn-small btn-danger', attrs: { 'data-del': p.id } }, 'Delete'));
-                }
                 const tr = el('tr', {},
                     el('td', {}, el('input', { attrs: { type: 'checkbox', 'data-select-id': p.id } })),
                     el('td', {}, p.title, (p.deletedAt ? [' ', el('span', { class: 'tag', attrs: { style: 'background:#722;' } }, 'deleted')] : [])),
@@ -3596,7 +4180,7 @@
                     el('td', {}, String(productStock(p))),
                     el('td', {}, new Date(p.updatedAt).toLocaleString()),
                     el('td', {}, p.tags.join(', ')),
-                    actions
+                    buildProductActionsCell(p, showDeletedMode)
                 );
                 if (p.deletedAt) tr.style.opacity = showDeletedMode ? '' : '0.55';
                 tbody.appendChild(tr);
@@ -3727,10 +4311,6 @@
                 if (idsAlready.has(bufProd.title)) return;
                 const tbody = pt2.querySelector('tbody');
                 if (!tbody) return;
-                const actions = el('td', {});
-                actions.appendChild(el('button', { class: 'btn btn-small btn-outline', attrs: { 'data-edit': bufProd.id } }, 'Edit'));
-                actions.appendChild(document.createTextNode(' '));
-                actions.appendChild(el('button', { class: 'btn btn-small btn-outline', attrs: { 'data-restore': bufProd.id } }, 'Restore'));
                 const tr = el('tr', {},
                     el('td', {}, el('input', { attrs: { type: 'checkbox', 'data-select-id': bufProd.id } })),
                     el('td', {}, bufProd.title, [' ', el('span', { class: 'tag', attrs: { style: 'background:#722;' } }, 'deleted (pending)')]),
@@ -3738,7 +4318,7 @@
                     el('td', {}, String(productStock(bufProd))),
                     el('td', {}, new Date(bufProd.updatedAt).toLocaleString()),
                     el('td', {}, (bufProd.tags || []).join(', ')),
-                    actions
+                    buildProductActionsCell(bufProd, true)
                 );
                 tbody.appendChild(tr);
             });
@@ -3759,9 +4339,17 @@
                 if (o.cancelledAt) tsParts.push('Cancelled:' + new Date(o.cancelledAt).toLocaleString());
                 const statusValue = typeof o.status === 'string' ? o.status : 'unknown';
                 const normalizedStatus = statusValue.toLowerCase();
-                const statusClass = normalizedStatus === 'approved' ? 'approved' : 'not-approved';
+                const statusClassMap = {
+                    cancelled: 'cancelled',
+                    created: 'created',
+                    paid: 'paid',
+                    completed: 'completed',
+                    approved: 'approved',
+                    rejected: 'not-approved'
+                };
+                const statusClass = statusClassMap[normalizedStatus] || '';
                 const statusLabel = statusValue.replace(/_/g, ' ');
-                const statusPill = el('span', { class: `status-chip ${statusClass}` }, statusLabel);
+                const statusPill = el('span', { class: `status-chip${statusClass ? ' ' + statusClass : ''}` }, statusLabel);
                 const tr = el('tr', {},
                     el('td', {}, o.id.slice(0, 8) + '…'),
                     el('td', {}, itemsText),
@@ -4007,6 +4595,10 @@
         const lt = document.getElementById('low-stock-table'); if (!lt) return;
         lt.innerHTML = '<thead><tr><th>Title</th><th>Inventory</th><th>Price</th></tr></thead><tbody></tbody>';
         const tbody = lt.querySelector('tbody');
+        if (!state.admin.lowStock.length) {
+            tbody.appendChild(el('tr', { class: 'muted' }, el('td', { attrs: { colspan: '3', style: 'text-align:center;padding:1.2rem;' } }, 'All products are above the threshold.')));
+            return;
+        }
         state.admin.lowStock.forEach(p => tbody.appendChild(el('tr', {}, el('td', {}, p.title), el('td', {}, String(p.totalInventory)), el('td', {}, money(p.priceCents)))));
     }
     function showDiscountModal(existing) {

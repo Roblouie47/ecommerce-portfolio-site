@@ -3,17 +3,29 @@
     without refactoring variable names. */
 :root {
     --color-bg: #0F1115;
+    --color-bg-rgb: 15 17 21;
     --color-surface: #171A1F;
+    --color-surface-rgb: 23 26 31;
     --color-surface-alt: #1F242B;
+    --color-surface-alt-rgb: 31 36 43;
     --color-text: #F8FAFC;
+    --color-text-rgb: 248 250 252;
     --color-text-muted: #94A3B8;
+    --color-text-muted-rgb: 148 163 184;
     --color-accent: #2563EB;
+    --color-accent-rgb: 37 99 235;
     --color-accent-contrast: #FFFFFF;
+    --color-accent-contrast-rgb: 255 255 255;
     --color-border: #2C323A;
+    --color-border-rgb: 44 50 58;
     --color-border-strong: #3B4450;
+    --color-border-strong-rgb: 59 68 80;
     --color-danger: #DC2626;
+    --color-danger-rgb: 220 38 38;
     --color-warning: #D97706;
+    --color-warning-rgb: 217 119 6;
     --color-success: #059669;
+    --color-success-rgb: 5 150 105;
     --focus-ring: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-accent);
 
     --easing-standard: cubic-bezier(0.4, 0.1, 0.2, 1);
@@ -33,15 +45,27 @@
 
 .dark {
     --color-bg: #FFFFFF;
+    --color-bg-rgb: 255 255 255;
     --color-surface: #FFFFFF;
+    --color-surface-rgb: 255 255 255;
     --color-surface-alt: #F5F7FA;
+    --color-surface-alt-rgb: 245 247 250;
     --color-text: #0F1115;
+    --color-text-rgb: 15 17 21;
     --color-text-muted: #4B5563;
+    --color-text-muted-rgb: 75 85 99;
     --color-accent: #1D4ED8;
+    --color-accent-rgb: 29 78 216;
     --color-accent-contrast: #FFFFFF;
+    --color-accent-contrast-rgb: 255 255 255;
     --color-border: #E2E8F0;
+    --color-border-rgb: 226 232 240;
     --color-border-strong: #CBD5E1;
+    --color-border-strong-rgb: 203 213 225;
     --color-danger: #B91C1C;
+    --color-danger-rgb: 185 28 28;
     --color-warning: #B45309;
+    --color-warning-rgb: 180 83 9;
     --color-success: #047857;
+    --color-success-rgb: 4 120 87;
 }

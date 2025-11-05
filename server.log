@@ -1,0 +1,13 @@
+[frontend] React build found. Mounting client/dist
+============================================================
+Server running http://localhost:3000
+Admin token first 4: nico...
+Endpoints ready.
+============================================================
+[2025-10-24T07:21:51.528Z] GET /api/admin/verify 200 9ms
+[2025-10-24T07:22:18.715Z] POST /api/customer/login 200 342ms
+[2025-10-24T07:22:29.601Z] POST /api/customer/login 200 348ms
+[2025-10-24T07:22:41.562Z] GET /api/admin/verify 200 3ms
+[2025-10-24T07:24:15.430Z] POST /api/customer/login 200 386ms
+[2025-10-24T07:24:15.476Z] GET /api/admin/verify 200 2ms
+[2025-10-24T07:25:26.293Z] GET /api/products 200 4ms

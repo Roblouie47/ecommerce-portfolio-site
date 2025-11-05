@@ -4,6 +4,9 @@ require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 module.exports = {
     PORT: parseInt(process.env.PORT, 10) || 3000,
     ADMIN_TOKEN: process.env.ADMIN_TOKEN || 'changeme',
+    ADMIN_EMAIL: process.env.ADMIN_EMAIL || '',
+    ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || '',
+    ADMIN_NAME: process.env.ADMIN_NAME || '',
     STRIPE_SECRET: process.env.STRIPE_SECRET || null,
     STRIPE_PUBLISHABLE: process.env.STRIPE_PUBLISHABLE || null,
     STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET || null,
