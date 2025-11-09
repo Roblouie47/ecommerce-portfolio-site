@@ -868,7 +868,9 @@
             email: (details.email || '').trim(),
             password: details.password || '',
             country: (details.country || '').trim().toUpperCase(),
-            address: formattedAddress
+            address: formattedAddress,
+            verificationCode: typeof details.verificationCode === 'string' ? details.verificationCode.trim() : '',
+            verificationId: typeof details.verificationId === 'string' ? details.verificationId.trim() : ''
         };
         const data = await apiFetch('/api/customer/register', {
             method: 'POST',
@@ -878,6 +880,16 @@
         if (!data || !data.user || !data.token) throw new Error('Registration failed.');
         setCustomerSession({ token: data.token, user: data.user });
         return data;
+    }
+
+    async function requestRegistrationCode(email) {
+        const payload = { email: (email || '').trim() };
+        return apiFetch('/api/customer/register/send-code', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            suppressAuthNotify: true
+        });
     }
 
     async function customerLogoutRequest() {
@@ -1054,8 +1066,9 @@
 
             function buildRegisterForm() {
                 const codeInput = el('input', { attrs: { id: 'reg-code', type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', required: 'true', placeholder: 'Enter verification code' } });
-                const resendBtn = el('button', { class: 'resend-btn', attrs: { type: 'button', 'aria-label': 'Resend code' } }, '↻');
-                const resendLabel = el('span', { class: 'resend-label help-text' }, 'Resend code in 30s');
+                const resendBtn = el('button', { class: 'resend-btn', attrs: { type: 'button', 'aria-label': 'Send verification code' } }, '✉');
+                resendBtn.disabled = true;
+                const resendLabel = el('span', { class: 'resend-label help-text' }, 'Enter your email to receive a code.');
                 const codeField = el('div', { class: 'field verification-field' },
                     el('label', { attrs: { for: 'reg-code' } }, 'Code*'),
                     el('div', { class: 'input-inline' },
@@ -1064,36 +1077,107 @@
                     ),
                     resendLabel
                 );
-
+                const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
                 let resendTimer = null;
-                let resendRemaining = 30;
-                function updateResendLabel() {
-                    if (resendRemaining > 0) {
-                        resendLabel.textContent = `Resend code in ${resendRemaining}s`;
-                        resendBtn.disabled = true;
-                    } else {
-                        resendLabel.textContent = '';
-                        resendBtn.disabled = false;
+                let resendRemaining = 0;
+                let sendingCode = false;
+                let verificationId = '';
+                let codeEmail = '';
+                let codeSent = false;
+
+                function clearResendTimer() {
+                    if (resendTimer) {
+                        clearInterval(resendTimer);
+                        resendTimer = null;
                     }
                 }
-                function startResendCountdown() {
-                    if (resendTimer) clearInterval(resendTimer);
+
+                function updateResendLabel() {
+                    const emailValue = emailInput ? (emailInput.value || '').trim() : '';
+                    const validEmail = EMAIL_PATTERN.test(emailValue);
+                    const waiting = resendRemaining > 0;
+                    const disabled = sendingCode || waiting || !validEmail;
+                    resendBtn.disabled = disabled;
+                    if (sendingCode) {
+                        resendLabel.textContent = 'Sending verification code…';
+                    } else if (!emailValue) {
+                        resendLabel.textContent = 'Enter your email to receive a code.';
+                    } else if (!validEmail) {
+                        resendLabel.textContent = 'Enter a valid email address.';
+                    } else if (waiting) {
+                        resendLabel.textContent = `Resend code in ${resendRemaining}s`;
+                    } else if (!codeSent) {
+                        resendLabel.textContent = 'Send a verification code to continue.';
+                    } else {
+                        resendLabel.textContent = 'Need a new code? You can request another now.';
+                    }
+                    resendBtn.textContent = codeSent ? '↻' : '✉';
+                    resendBtn.setAttribute('aria-label', codeSent ? 'Resend verification code' : 'Send verification code');
+                }
+
+                function startResendCountdown(seconds) {
+                    clearResendTimer();
+                    resendRemaining = Math.max(0, Number(seconds) || 0);
                     updateResendLabel();
                     if (resendRemaining <= 0) return;
                     resendTimer = setInterval(() => {
                         resendRemaining -= 1;
-                        updateResendLabel();
-                        if (resendRemaining <= 0 && resendTimer) {
-                            clearInterval(resendTimer);
-                            resendTimer = null;
+                        if (resendRemaining <= 0) {
+                            clearResendTimer();
                         }
+                        updateResendLabel();
                     }, 1000);
                 }
-                startResendCountdown();
-                resendBtn.addEventListener('click', () => {
-                    notify('Verification code resent.', 'info', 2600);
-                    resendRemaining = 30;
-                    startResendCountdown();
+
+                function resetVerificationState() {
+                    verificationId = '';
+                    codeEmail = '';
+                    codeSent = false;
+                    codeInput.value = '';
+                    resendRemaining = 0;
+                    clearResendTimer();
+                    updateResendLabel();
+                }
+
+                resendBtn.addEventListener('click', async () => {
+                    if (sendingCode) return;
+                    const emailValue = emailInput ? (emailInput.value || '').trim() : '';
+                    if (!EMAIL_PATTERN.test(emailValue)) {
+                        status.textContent = 'Enter a valid email before requesting a code.';
+                        status.classList.add('error');
+                        updateResendLabel();
+                        return;
+                    }
+                    const requestedEmail = emailValue.trim();
+                    const requestedEmailLower = requestedEmail.toLowerCase();
+                    sendingCode = true;
+                    status.classList.remove('error');
+                    status.textContent = 'Sending verification code…';
+                    updateResendLabel();
+                    try {
+                        const res = await requestRegistrationCode(requestedEmail);
+                        const currentNormalized = emailInput ? (emailInput.value || '').trim().toLowerCase() : '';
+                        if (currentNormalized && currentNormalized !== requestedEmailLower) {
+                            resetVerificationState();
+                            status.textContent = 'Email updated. Request a new verification code.';
+                            status.classList.add('error');
+                            return;
+                        }
+                        verificationId = (res?.verificationId || '').trim();
+                        codeEmail = requestedEmailLower;
+                        codeSent = true;
+                        status.textContent = `Verification code sent to ${requestedEmail}.`;
+                        const cooldown = typeof res?.retryAfter === 'number' ? res.retryAfter : 45;
+                        startResendCountdown(cooldown);
+                    } catch (err) {
+                        status.textContent = err.message || 'Unable to send verification code.';
+                        status.classList.add('error');
+                        resendRemaining = 0;
+                        clearResendTimer();
+                    } finally {
+                        sendingCode = false;
+                        updateResendLabel();
+                    }
                 });
 
                 const firstInput = el('input', { attrs: { id: 'reg-first', type: 'text', autocomplete: 'given-name', required: 'true', placeholder: 'First name' } });
@@ -1113,6 +1197,17 @@
                     el('label', { attrs: { for: 'reg-email' } }, 'Email*'),
                     emailInput
                 );
+                emailInput.addEventListener('input', () => {
+                    const normalized = (emailInput.value || '').trim().toLowerCase();
+                    if (codeEmail && normalized !== codeEmail) {
+                        resetVerificationState();
+                        status.textContent = 'Email changed. Request a new verification code.';
+                        status.classList.add('error');
+                    } else {
+                        updateResendLabel();
+                    }
+                });
+                updateResendLabel();
 
                 const passwordInput = el('input', { attrs: { id: 'reg-pass', type: 'password', autocomplete: 'new-password', required: 'true', minlength: '8', placeholder: 'Minimum 8 characters' } });
                 const passwordToggle = el('button', { class: 'password-toggle', attrs: { type: 'button', 'aria-label': 'Show password' } }, '👁');
@@ -1258,6 +1353,16 @@
 
                     updatePasswordHints(pass);
 
+                    if (codeEmail && codeEmail !== email.toLowerCase()) {
+                        status.textContent = 'Request a new verification code for the updated email.';
+                        status.classList.add('error');
+                        return;
+                    }
+                    if (!verificationId) {
+                        status.textContent = 'Request a verification code for your email before creating an account.';
+                        status.classList.add('error');
+                        return;
+                    }
                     if (!code || code.length < 4) {
                         status.textContent = 'Enter the verification code we sent you.';
                         status.classList.add('error');
@@ -1300,14 +1405,13 @@
                     status.textContent = 'Creating your account…';
                     const name = `${firstName} ${surname}`.trim();
                     const addressMeta = {
-                        verificationCode: code,
                         shoppingPreference: preference,
                         dob: { day, month, year },
                         marketingOptIn,
                         termsAcceptedAt: new Date().toISOString()
                     };
                     try {
-                        const res = await customerRegisterRequest({ name, email, password: pass, country, address: addressMeta });
+                        const res = await customerRegisterRequest({ name, email, password: pass, country, address: addressMeta, verificationCode: code, verificationId });
                         notify('Account ready. Welcome, ' + (res.user?.name || firstName) + '!', 'success', 2800);
                         if (resendTimer) {
                             clearInterval(resendTimer);

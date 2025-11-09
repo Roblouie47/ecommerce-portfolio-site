@@ -6,14 +6,45 @@ const path = require('path');
 const multer = require('multer');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const nodemailer = require('nodemailer');
 const { v4: uuid } = require('uuid');
-const { PORT, ADMIN_TOKEN, ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME, STRIPE_SECRET, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE, PUBLIC_URL } = require('./src/config/env');
+const { PORT, ADMIN_TOKEN, ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME, STRIPE_SECRET, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE, PUBLIC_URL, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE, EMAIL_FROM } = require('./src/config/env');
 const { isAdmin, requireAdmin } = require('./src/middleware/admin');
 const db = require('./src/db');
 const { parseJSONField, validateProductInput, validateVariant, buildProductRow, computeCartTotals, getReviewSummary } = require('./src/utils');
 const { v4: uuidv4 } = require('uuid');
 
 const stripe = STRIPE_SECRET ? require('stripe')(STRIPE_SECRET, { apiVersion: '2023-10-16' }) : null;
+
+const VERIFICATION_CODE_LENGTH = 6;
+const EMAIL_VERIFICATION_TTL_MS = 1000 * 60 * 10; // 10 minutes
+const EMAIL_VERIFICATION_RESEND_MS = 1000 * 45; // 45 seconds
+const MAX_VERIFICATION_ATTEMPTS = 5;
+
+const pendingVerificationCodes = new Map();
+const verificationIndexByEmail = new Map();
+
+const EMAIL_SENDER = EMAIL_FROM || SMTP_USER || '';
+let mailTransport = null;
+if (SMTP_HOST && EMAIL_SENDER) {
+  const transportConfig = {
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_SECURE || SMTP_PORT === 465
+  };
+  if (SMTP_USER) {
+    transportConfig.auth = { user: SMTP_USER, pass: SMTP_PASS };
+  }
+  mailTransport = nodemailer.createTransport(transportConfig);
+  mailTransport.verify().then(() => {
+    console.log('[mail] transport ready.');
+  }).catch((err) => {
+    mailTransport = null;
+    console.warn('[mail] transport verification failed:', err.message);
+  });
+} else {
+  console.warn('[mail] Email transport not configured; verification emails disabled.');
+}
 
 const app = express();
 // Disable default ETag so dynamic API responses (discount lookups) don't 304 and break client discount fetch logic
@@ -60,6 +91,43 @@ function clampText(value, max) {
 function normalizeCountry(value) {
   const text = clampText(value, 64);
   return text ? text.toUpperCase() : '';
+}
+
+function hashVerificationCode(code) {
+  return crypto.createHash('sha256').update(String(code || '')).digest('hex');
+}
+
+async function sendVerificationEmail(recipient, code) {
+  if (!mailTransport || !EMAIL_SENDER) {
+    throw new Error('Email transport not configured');
+  }
+  const safeCode = String(code || '').trim();
+  const message = {
+    from: EMAIL_SENDER,
+    to: recipient,
+    subject: 'Your verification code',
+    text: `Use this code to verify your email: ${safeCode}\nThis code expires in ${Math.round(EMAIL_VERIFICATION_TTL_MS / 60000)} minutes.`,
+    html: `<p>Use the code below to verify your email address.</p><p style="font-size:24px;font-weight:bold;letter-spacing:4px;">${safeCode}</p><p>This code expires in ${Math.round(EMAIL_VERIFICATION_TTL_MS / 60000)} minutes.</p>`
+  };
+  await mailTransport.sendMail(message);
+}
+
+function pruneExpiredVerifications() {
+  const now = Date.now();
+  for (const [id, entry] of pendingVerificationCodes.entries()) {
+    if (!entry || entry.expiresAt <= now) {
+      pendingVerificationCodes.delete(id);
+      if (entry?.email) {
+        const current = verificationIndexByEmail.get(entry.email);
+        if (current === id) verificationIndexByEmail.delete(entry.email);
+      }
+    }
+  }
+}
+
+const verificationCleanupTimer = setInterval(pruneExpiredVerifications, 1000 * 60 * 5);
+if (typeof verificationCleanupTimer.unref === 'function') {
+  verificationCleanupTimer.unref();
 }
 
 const DEFAULT_ADMIN_EMAIL = normalizeEmail(ADMIN_EMAIL);
@@ -410,15 +478,104 @@ const upload = multer({ storage });
 const uploadMemory = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
 
 // ---------- Customer Authentication Endpoints ----------
+app.post('/api/customer/register/send-code', async (req, res) => {
+  try {
+    if (!mailTransport || !EMAIL_SENDER || !SMTP_HOST) {
+      return res.status(503).json({ error: 'Email delivery is not configured' });
+    }
+    const { email: rawEmail } = req.body || {};
+    const email = normalizeEmail(rawEmail);
+    if (!email || !EMAIL_REGEX.test(email)) {
+      return res.status(400).json({ error: 'Enter a valid email address' });
+    }
+    const existing = selectUserByEmailStmt.get(email);
+    if (existing) {
+      return res.status(409).json({ error: 'Email already registered' });
+    }
+    const now = Date.now();
+    const existingId = verificationIndexByEmail.get(email);
+    if (existingId) {
+      const prior = pendingVerificationCodes.get(existingId);
+      if (prior && prior.expiresAt > now) {
+        const elapsed = now - (prior.lastSentAt || 0);
+        if (elapsed < EMAIL_VERIFICATION_RESEND_MS) {
+          const retryAfter = Math.ceil((EMAIL_VERIFICATION_RESEND_MS - elapsed) / 1000);
+          return res.status(429).json({ error: `Please wait ${retryAfter}s before requesting a new code`, retryAfter });
+        }
+      }
+      pendingVerificationCodes.delete(existingId);
+    }
+    const codeNumber = crypto.randomInt(0, Math.pow(10, VERIFICATION_CODE_LENGTH));
+    const code = String(codeNumber).padStart(VERIFICATION_CODE_LENGTH, '0');
+    const verificationId = uuid();
+    const entry = {
+      email,
+      codeHash: hashVerificationCode(code),
+      expiresAt: now + EMAIL_VERIFICATION_TTL_MS,
+      attempts: 0,
+      lastSentAt: now
+    };
+    pendingVerificationCodes.set(verificationId, entry);
+    verificationIndexByEmail.set(email, verificationId);
+    try {
+      await sendVerificationEmail(email, code);
+    } catch (err) {
+      pendingVerificationCodes.delete(verificationId);
+      if (verificationIndexByEmail.get(email) === verificationId) {
+        verificationIndexByEmail.delete(email);
+      }
+      console.error('[customer] verification email failed', err);
+      return res.status(500).json({ error: 'Unable to send verification code' });
+    }
+    res.json({
+      sent: true,
+      verificationId,
+      expiresIn: Math.ceil(EMAIL_VERIFICATION_TTL_MS / 1000),
+      retryAfter: Math.ceil(EMAIL_VERIFICATION_RESEND_MS / 1000)
+    });
+  } catch (err) {
+    console.error('[customer] send verification code failed', err);
+    res.status(500).json({ error: 'Unable to send verification code' });
+  }
+});
+
 app.post('/api/customer/register', async (req, res) => {
   try {
-    const { email: rawEmail, password, name: rawName, avatarUrl: rawAvatar, country: rawCountry, address: rawAddress } = req.body || {};
+    const { email: rawEmail, password, name: rawName, avatarUrl: rawAvatar, country: rawCountry, address: rawAddress, verificationId: rawVerificationId, verificationCode: rawVerificationCode } = req.body || {};
     const email = normalizeEmail(rawEmail);
     const passwordValue = typeof password === 'string' ? password : '';
     if (!email || !EMAIL_REGEX.test(email)) return res.status(400).json({ error: 'A valid email is required' });
     if (passwordValue.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
     const existing = selectUserByEmailStmt.get(email);
     if (existing) return res.status(409).json({ error: 'Email already registered' });
+
+    const verificationId = typeof rawVerificationId === 'string' ? rawVerificationId.trim() : '';
+    const verificationCode = typeof rawVerificationCode === 'string' ? rawVerificationCode.trim() : '';
+    if (!verificationId || !verificationCode) {
+      return res.status(400).json({ error: 'Email verification is required before creating an account' });
+    }
+    const verificationEntry = pendingVerificationCodes.get(verificationId);
+    if (!verificationEntry || verificationEntry.email !== email) {
+      return res.status(400).json({ error: 'Verification code invalid or expired. Request a new code.' });
+    }
+    const nowMs = Date.now();
+    if (verificationEntry.expiresAt <= nowMs) {
+      pendingVerificationCodes.delete(verificationId);
+      if (verificationIndexByEmail.get(email) === verificationId) verificationIndexByEmail.delete(email);
+      return res.status(400).json({ error: 'Verification code expired. Request a new code.' });
+    }
+    const attemptHash = hashVerificationCode(verificationCode);
+    if (attemptHash !== verificationEntry.codeHash) {
+      verificationEntry.attempts = (verificationEntry.attempts || 0) + 1;
+      if (verificationEntry.attempts >= MAX_VERIFICATION_ATTEMPTS) {
+        pendingVerificationCodes.delete(verificationId);
+        if (verificationIndexByEmail.get(email) === verificationId) verificationIndexByEmail.delete(email);
+        return res.status(400).json({ error: 'Too many incorrect attempts. Request a new code.' });
+      }
+      return res.status(400).json({ error: 'Incorrect verification code' });
+    }
+    pendingVerificationCodes.delete(verificationId);
+    if (verificationIndexByEmail.get(email) === verificationId) verificationIndexByEmail.delete(email);
 
     const name = clampText(rawName, 120);
     const avatarUrl = clampText(rawAvatar, 2048);
