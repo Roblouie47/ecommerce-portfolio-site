@@ -1,0 +1,23 @@
+{
+    "compilerOptions": {
+        "allowJs": true,
+        "checkJs": true,
+        "jsx": "react-jsx",
+        "target": "ES2020",
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": false
+    },
+    "include": [
+        "client/src/**/*",
+        "src/**/*"
+    ],
+    "exclude": [
+        "public/**/*",
+        "client/dist/**/*",
+        "node_modules",
+        "client/node_modules",
+        "server.err",
+        "data/**/*"
+    ]
+}

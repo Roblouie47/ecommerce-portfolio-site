@@ -29,5 +29,7 @@ module.exports = {
     SMTP_USER: process.env.SMTP_USER || '',
     SMTP_PASS: process.env.SMTP_PASS || '',
     SMTP_SECURE: parseBoolean(process.env.SMTP_SECURE, false),
-    EMAIL_FROM: process.env.EMAIL_FROM || process.env.SMTP_USER || ''
+    EMAIL_FROM: process.env.EMAIL_FROM || process.env.SMTP_USER || '',
+    EMAIL_DEV_MODE: parseBoolean(process.env.EMAIL_DEV_MODE, process.env.NODE_ENV !== 'production'),
+    EMAIL_DEV_RECIPIENT: process.env.EMAIL_DEV_RECIPIENT || ''
 };
