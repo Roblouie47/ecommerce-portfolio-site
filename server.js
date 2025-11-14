@@ -8,7 +8,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const { v4: uuid } = require('uuid');
-const { PORT, ADMIN_TOKEN, ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME, STRIPE_SECRET, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE, PUBLIC_URL, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE, EMAIL_FROM } = require('./src/config/env');
+const { PORT, ADMIN_TOKEN, ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME, STRIPE_SECRET, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE, PUBLIC_URL, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE, EMAIL_FROM, EMAIL_DEV_MODE, EMAIL_DEV_RECIPIENT } = require('./src/config/env');
 const { isAdmin, requireAdmin } = require('./src/middleware/admin');
 const db = require('./src/db');
 const { parseJSONField, validateProductInput, validateVariant, buildProductRow, computeCartTotals, getReviewSummary } = require('./src/utils');
@@ -42,8 +42,10 @@ if (SMTP_HOST && EMAIL_SENDER) {
     mailTransport = null;
     console.warn('[mail] transport verification failed:', err.message);
   });
-} else {
+} else if (!EMAIL_DEV_MODE) {
   console.warn('[mail] Email transport not configured; verification emails disabled.');
+} else {
+  console.warn('[mail] Email transport not configured; dev mode enabled (codes logged locally).');
 }
 
 const app = express();
@@ -98,10 +100,17 @@ function hashVerificationCode(code) {
 }
 
 async function sendVerificationEmail(recipient, code) {
+  const safeCode = String(code || '').trim();
+  if (EMAIL_DEV_MODE && EMAIL_DEV_RECIPIENT) {
+    recipient = EMAIL_DEV_RECIPIENT;
+  }
   if (!mailTransport || !EMAIL_SENDER) {
+    if (EMAIL_DEV_MODE) {
+      console.log(`[mail] dev mode verification code for ${recipient}: ${safeCode}`);
+      return;
+    }
     throw new Error('Email transport not configured');
   }
-  const safeCode = String(code || '').trim();
   const message = {
     from: EMAIL_SENDER,
     to: recipient,
@@ -384,41 +393,6 @@ async function finalizeStripeOrder(session) {
     console.warn('[stripe] order not found for session', sessionId);
     return;
   }
-  if (order.paidAt) {
-    // Already processed
-    return;
-  }
-  const now = new Date().toISOString();
-  const orderItems = db.prepare('SELECT productId, variantId, quantity FROM order_items WHERE orderId=?').all(order.id);
-  const decrementVariant = db.prepare('UPDATE variants SET inventory = inventory - ? WHERE id=?');
-  const decrementProduct = db.prepare('UPDATE products SET baseInventory = baseInventory - ?, updatedAt=? WHERE id=?');
-  const updateOrder = db.prepare('UPDATE orders SET status=?, paidAt=?, stripePaymentIntentId=?, stripeSessionId=?, customerEmail=COALESCE(customerEmail, ?), paymentProvider=? WHERE id=?');
-  const insertEvent = db.prepare('INSERT INTO order_events(id,orderId,status,at) VALUES(?,?,?,?)');
-  const tx = db.transaction((items) => {
-    for (const it of items) {
-      if (it.variantId) {
-        decrementVariant.run(it.quantity, it.variantId);
-      } else if (it.productId) {
-        decrementProduct.run(it.quantity, now, it.productId);
-      }
-    }
-    updateOrder.run('paid', now, session.payment_intent || null, sessionId, session.customer_details?.email || null, 'stripe', order.id);
-    insertEvent.run(uuidv4(), order.id, 'paid', now);
-  });
-  tx(orderItems);
-  metrics.ordersCreated++;
-  audit('order', order.id, 'stripe-paid', { status: order.status, paidAt: order.paidAt }, { status: 'paid', paidAt: now });
-}
-
-async function markStripeOrderExpired(session) {
-  if (!session) return;
-  const metadata = session.metadata || {};
-  const orderId = metadata.orderId;
-  const sessionId = session.id;
-  let order = null;
-  if (orderId) order = db.prepare('SELECT * FROM orders WHERE id=?').get(orderId);
-  if (!order && sessionId) order = db.prepare('SELECT * FROM orders WHERE stripeSessionId=?').get(sessionId);
-  if (!order) return;
   if (order.paidAt || order.cancelledAt) return;
   const now = new Date().toISOString();
   db.prepare('UPDATE orders SET status=?, cancelledAt=? WHERE id=?').run('cancelled', now, order.id);
@@ -480,7 +454,8 @@ const uploadMemory = multer({ storage: multer.memoryStorage(), limits: { fileSiz
 // ---------- Customer Authentication Endpoints ----------
 app.post('/api/customer/register/send-code', async (req, res) => {
   try {
-    if (!mailTransport || !EMAIL_SENDER || !SMTP_HOST) {
+    const transportReady = !!(mailTransport && EMAIL_SENDER && SMTP_HOST);
+    if (!transportReady && !EMAIL_DEV_MODE) {
       return res.status(503).json({ error: 'Email delivery is not configured' });
     }
     const { email: rawEmail } = req.body || {};
@@ -517,6 +492,7 @@ app.post('/api/customer/register/send-code', async (req, res) => {
     };
     pendingVerificationCodes.set(verificationId, entry);
     verificationIndexByEmail.set(email, verificationId);
+    const devModeActive = EMAIL_DEV_MODE && !transportReady;
     try {
       await sendVerificationEmail(email, code);
     } catch (err) {
@@ -525,17 +501,21 @@ app.post('/api/customer/register/send-code', async (req, res) => {
         verificationIndexByEmail.delete(email);
       }
       console.error('[customer] verification email failed', err);
-      return res.status(500).json({ error: 'Unable to send verification code' });
+      const reason = err?.message ? `Unable to send verification code: ${err.message}` : 'Unable to send verification code';
+      return res.status(500).json({ error: EMAIL_DEV_MODE ? `${reason} (dev mode: check server logs for the code).` : reason });
     }
     res.json({
       sent: true,
       verificationId,
       expiresIn: Math.ceil(EMAIL_VERIFICATION_TTL_MS / 1000),
-      retryAfter: Math.ceil(EMAIL_VERIFICATION_RESEND_MS / 1000)
+      retryAfter: Math.ceil(EMAIL_VERIFICATION_RESEND_MS / 1000),
+      devMode: devModeActive,
+      devCode: devModeActive ? code : undefined
     });
   } catch (err) {
     console.error('[customer] send verification code failed', err);
-    res.status(500).json({ error: 'Unable to send verification code' });
+    const reason = err?.message ? `Unable to send verification code: ${err.message}` : 'Unable to send verification code';
+    res.status(500).json({ error: reason });
   }
 });
 

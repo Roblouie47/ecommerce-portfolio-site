@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Frontend Single-File App (reconstructed header after patch)
  */
@@ -2361,351 +2362,267 @@
      * RENDER: Catalog
      * ---------------------------- */
 
-    const ensureCatalogPageStyles = (() => {
-        let injected = false;
-        return () => {
-            if (injected) return;
-            injected = true;
-            const style = document.createElement('style');
-            style.id = 'catalog-hero-style';
-            style.textContent = `
-.catalog-hero {
-    max-width: min(1120px, 92vw);
-    margin: 0 auto 2.75rem;
-    padding: clamp(2.6rem, 2rem + 4vw, 3.6rem);
-    border-radius: 32px;
-    position: relative;
-    overflow: hidden;
-    color: #f8fafc;
-    background: radial-gradient(circle at 12% 88%, rgba(244, 114, 182, 0.22), transparent 55%), radial-gradient(circle at 85% 12%, rgba(56, 189, 248, 0.25), transparent 45%), linear-gradient(135deg, #0f172a 0%, #1d4ed8 58%, #6366f1 100%);
-    display: grid;
-    grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
-    gap: clamp(2rem, 3vw, 3.5rem);
-    box-shadow: 0 40px 90px -60px rgba(15, 23, 42, 0.72);
-}
-.catalog-hero::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: radial-gradient(circle at 25% 20%, rgba(255, 255, 255, 0.12), transparent 52%);
-    pointer-events: none;
-    mix-blend-mode: screen;
-    opacity: 0.7;
-}
-.catalog-hero-content {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    gap: 1.4rem;
-    z-index: 1;
-}
-.catalog-hero-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.45rem;
-    padding: 0.45rem 0.75rem;
-    border-radius: 999px;
-    background: rgba(15, 23, 42, 0.4);
-    font-size: 0.68rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-}
-.catalog-hero-title {
-    font-size: clamp(2.5rem, 1.8rem + 2vw, 3.2rem);
-    font-weight: 700;
-    line-height: 1.05;
-    letter-spacing: -0.03em;
-    margin: 0;
-}
-.catalog-hero-copy {
-    margin: 0;
-    font-size: 1rem;
-    line-height: 1.6;
-    color: rgba(241, 245, 249, 0.88);
-    max-width: 520px;
-}
-.catalog-hero-stats {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1.25rem;
-}
-.catalog-hero-stat {
-    min-width: 140px;
-    padding: 0.75rem 1rem;
-    border-radius: 16px;
-    background: rgba(15, 23, 42, 0.48);
-    backdrop-filter: blur(14px);
-    box-shadow: 0 18px 38px -28px rgba(15, 23, 42, 0.65);
-    display: flex;
-    flex-direction: column;
-    gap: 0.2rem;
-}
-.catalog-hero-stat .stat-value {
-    font-size: 1.45rem;
-    font-weight: 700;
-    color: #f8fafc;
-}
-.catalog-hero-stat .stat-label {
-    font-size: 0.75rem;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: rgba(241, 245, 249, 0.7);
-}
-.catalog-hero-filters {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.6rem;
-    margin-top: 0.2rem;
-}
-.catalog-hero-filter {
-    border: 1px solid rgba(248, 250, 252, 0.35);
-    background: rgba(15, 23, 42, 0.4);
-    color: #f8fafc;
-    padding: 0.55rem 0.85rem;
-    border-radius: 12px;
-    font-size: 0.78rem;
-    font-weight: 600;
-    transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
-}
-.catalog-hero-filter:hover,
-.catalog-hero-filter:focus-visible,
-.catalog-hero-filter.active {
-    outline: none;
-    border-color: rgba(248, 250, 252, 0.8);
-    background: rgba(248, 250, 252, 0.12);
-    transform: translateY(-1px);
-}
-.catalog-hero-media {
-    position: relative;
-    z-index: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-.catalog-hero-frame {
-    position: relative;
-    border-radius: 26px;
-    padding: 0.65rem;
-    background: linear-gradient(160deg, rgba(255, 255, 255, 0.35), rgba(255, 255, 255, 0.05));
-    box-shadow: 0 42px 90px -55px rgba(15, 23, 42, 0.7);
-    backdrop-filter: blur(12px);
-}
-.catalog-hero-frame img {
-    display: block;
-    width: min(100%, 420px);
-    border-radius: 20px;
-    object-fit: cover;
-}
-.catalog-hero-tag {
-    position: absolute;
-    bottom: 6%;
-    right: 8%;
-    padding: 0.5rem 1rem;
-    border-radius: 999px;
-    background: rgba(15, 23, 42, 0.65);
-    color: #f8fafc;
-    font-size: 0.72rem;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    box-shadow: 0 16px 32px -28px rgba(15, 23, 42, 0.7);
-}
-@media (max-width: 960px) {
-    .catalog-hero {
-        grid-template-columns: 1fr;
-        padding: clamp(2.3rem, 5vw, 3rem);
-        gap: 2.4rem;
-    }
-    .catalog-hero-media {
-        justify-content: flex-start;
-    }
-    .catalog-hero-frame img {
-        width: 100%;
-        max-width: 480px;
-    }
-    .catalog-hero-tag {
-        bottom: auto;
-        top: 8%;
-        right: 6%;
-    }
-}
-@media (max-width: 640px) {
-    .catalog-hero {
-        border-radius: 24px;
-    }
-    .catalog-hero-stats {
-        gap: 0.85rem;
-    }
-    .catalog-hero-stat {
-        min-width: calc(50% - 0.5rem);
-    }
-    .catalog-hero-tag {
-        position: static;
-        align-self: flex-start;
-        margin-top: 1rem;
-    }
-}
-`;
-            document.head?.appendChild(style);
-        };
-    })();
-
     function renderCatalog() {
-        ensureCatalogPageStyles();
         rootEl.innerHTML = '';
 
         const availableProducts = state.products.filter(p => !p.deletedAt);
         const baseProducts = availableProducts.slice();
-        const weightedRating = availableProducts.reduce((acc, product) => {
-            const summary = product.reviewSummary;
-            if (summary && summary.count > 0 && typeof summary.average === 'number') {
-                acc.sum += summary.average * summary.count;
-                acc.count += summary.count;
-            }
-            return acc;
-        }, { sum: 0, count: 0 });
-        const averageRating = weightedRating.count ? weightedRating.sum / weightedRating.count : null;
-        const averageRatingLabel = averageRating ? `${averageRating.toFixed(1)}★` : 'First look';
-        const THIRTY_DAYS = 1000 * 60 * 60 * 24 * 30;
-        const now = Date.now();
-        const newDropCount = availableProducts.filter(product => {
-            const created = new Date(product.createdAt || '').getTime();
-            return Number.isFinite(created) && (now - created) <= THIRTY_DAYS;
-        }).length;
+        const priceValues = baseProducts.map(p => p.priceCents || 0);
+        const maxPrice = priceValues.length ? Math.max(...priceValues) : 0;
+        const minPrice = 0;
 
-        const quickFilterConfig = [
-            { label: 'Classic tees', term: 'classic' },
-            { label: 'Essential picks', term: 'essential' },
-            { label: 'Breathable cotton', term: 'cotton' },
-            { label: 'New drops', term: 'new' }
-        ];
-
-        const heroSection = el('section', { class: 'catalog-hero' },
-            el('div', { class: 'catalog-hero-content' },
-                el('span', { class: 'catalog-hero-badge' }, 'Season 07 · Daily Essentials'),
-                el('h1', { class: 'catalog-hero-title' }, 'Refresh Your Everyday Rotation'),
-                el('p', { class: 'catalog-hero-copy' }, 'Discover breathable staples built to flex with your day. Explore balanced color stories and premium cotton blends curated by our merch team.'),
-                el('div', { class: 'catalog-hero-stats' },
-                    el('div', { class: 'catalog-hero-stat' },
-                        el('span', { class: 'stat-value' }, `${availableProducts.length}+`),
-                        el('span', { class: 'stat-label' }, 'Catalog entries')
-                    ),
-                    el('div', { class: 'catalog-hero-stat' },
-                        el('span', { class: 'stat-value' }, newDropCount ? `${newDropCount}` : 'Fresh'),
-                        el('span', { class: 'stat-label' }, newDropCount ? 'New this month' : 'Weekly refresh')
-                    ),
-                    el('div', { class: 'catalog-hero-stat' },
-                        el('span', { class: 'stat-value' }, averageRatingLabel),
-                        el('span', { class: 'stat-label' }, 'Community score')
-                    )
-                ),
-                el('div', { class: 'catalog-hero-filters' },
-                    ...quickFilterConfig.map(filter => el('button', {
-                        class: 'catalog-hero-filter',
-                        attrs: { type: 'button', 'data-term': filter.term }
-                    }, filter.label))
-                )
-            ),
-            el('div', { class: 'catalog-hero-media' },
-                el('div', { class: 'catalog-hero-frame' },
-                    el('img', {
-                        attrs: {
-                            src: productPlaceholder(1080),
-                            alt: 'Folded cotton tees in gradient tones',
-                            loading: 'lazy'
-                        }
-                    })
-                ),
-                el('div', { class: 'catalog-hero-tag' }, 'New drop every Friday')
+        const page = el('section', { class: 'catalog-page' });
+        const header = el('header', { class: 'catalog-page-header' },
+            el('div', {},
+                el('h1', { class: 'catalog-page-title' }, 'Product Catalog'),
+                el('p', { class: 'catalog-page-subtitle muted' }, 'Discover our curated collection of modern furniture and decor')
             )
         );
-        rootEl.appendChild(heroSection);
+        page.appendChild(header);
 
-        const heroFilters = Array.from(heroSection.querySelectorAll('.catalog-hero-filter[data-term]'));
-        const syncHeroFilters = (normalizedTerm) => {
-            const activeTerm = (normalizedTerm || '').trim();
-            heroFilters.forEach(btn => {
-                const btnTerm = (btn.getAttribute('data-term') || '').toLowerCase();
-                btn.classList.toggle('active', !!activeTerm && activeTerm === btnTerm);
+        const controlsBar = el('div', { class: 'catalog-controls' });
+        const searchForm = el('form', { class: 'catalog-search-bar', attrs: { role: 'search' } },
+            el('span', { class: 'catalog-search-icon' }, '🔍'),
+            el('label', { class: 'sr-only', attrs: { for: 'catalog-search-input' } }, 'Search products'),
+            el('input', {
+                class: 'catalog-search-input',
+                attrs: {
+                    id: 'catalog-search-input',
+                    type: 'search',
+                    placeholder: 'Search products…',
+                    autocomplete: 'off'
+                }
+            })
+        );
+        controlsBar.appendChild(searchForm);
+
+        const actionsGroup = el('div', { class: 'catalog-actions-group' },
+            el('label', { class: 'catalog-sort-label', attrs: { for: 'catalog-sort-select' } }, 'Sort by'),
+            el('select', { class: 'catalog-sort-select', attrs: { id: 'catalog-sort-select' } },
+                el('option', { attrs: { value: 'recommended' } }, 'Recommended'),
+                el('option', { attrs: { value: 'price-asc' } }, 'Price: Low to High'),
+                el('option', { attrs: { value: 'price-desc' } }, 'Price: High to Low'),
+                el('option', { attrs: { value: 'newest' } }, 'Newest Arrivals')
+            ),
+            el('div', { class: 'catalog-view-toggle', attrs: { role: 'radiogroup', 'aria-label': 'View style' } },
+                el('button', { class: 'view-btn active', attrs: { type: 'button', 'data-view': 'grid' } }, '▦'),
+                el('button', { class: 'view-btn', attrs: { type: 'button', 'data-view': 'list', disabled: 'true' } }, '☰')
+            )
+        );
+        controlsBar.appendChild(actionsGroup);
+        page.appendChild(controlsBar);
+
+        const metaRow = el('div', { class: 'catalog-meta-row' });
+        const resultCountEl = el('span', { class: 'catalog-result-count muted' }, '');
+        metaRow.appendChild(resultCountEl);
+        page.appendChild(metaRow);
+
+        const layout = el('div', { class: 'catalog-layout' });
+        const aside = el('aside', { class: 'catalog-filters' });
+        const filterHeader = el('div', { class: 'filters-header' },
+            el('h2', {}, 'Filters'),
+            el('button', { class: 'filters-clear', attrs: { type: 'button' } }, 'Clear All')
+        );
+        aside.appendChild(filterHeader);
+
+        const filterContent = el('div', { class: 'filters-content' });
+
+        const categoryGroup = el('div', { class: 'filter-group' });
+        categoryGroup.appendChild(el('div', { class: 'filter-group-header' },
+            el('span', { class: 'filter-title' }, 'Category')
+        ));
+        const categoryList = el('div', { class: 'filter-list' });
+        const categoryMap = new Map();
+        baseProducts.forEach(p => {
+            (Array.isArray(p.tags) ? p.tags : []).forEach(tag => {
+                const norm = (tag || '').toString().trim().toLowerCase();
+                if (!norm) return;
+                const label = norm.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+                if (!categoryMap.has(norm)) categoryMap.set(norm, label);
             });
-        };
+        });
+        if (!categoryMap.size) {
+            categoryMap.set('seating', 'Seating');
+            categoryMap.set('lighting', 'Lighting');
+        }
+        const categoryCheckboxes = [];
+        categoryMap.forEach((label, value) => {
+            const checkbox = el('label', { class: 'filter-checkbox' },
+                el('input', { attrs: { type: 'checkbox', value } }),
+                el('span', {}, label)
+            );
+            categoryList.appendChild(checkbox);
+            categoryCheckboxes.push(checkbox.querySelector('input'));
+        });
+        categoryGroup.appendChild(categoryList);
+        filterContent.appendChild(categoryGroup);
 
-        const panel = el('section', { class: 'panel catalog-panel' });
-        const panelBody = el('div', { class: 'catalog-panel-body' });
-        const header = el('div', { class: 'catalog-header' },
-            el('div', { class: 'catalog-heading' },
-                el('h2', { class: 'catalog-title' }, 'Catalog')
-            ),
-            el('form', { class: 'catalog-search', attrs: { id: 'catalog-search-form', role: 'search' } },
-                el('label', { class: 'sr-only', attrs: { for: 'catalog-search-input' } }, 'Search catalog'),
-                el('input', {
-                    class: 'catalog-search-input',
-                    attrs: {
-                        id: 'catalog-search-input',
-                        type: 'search',
-                        placeholder: 'Search...',
-                        autocomplete: 'off'
-                    }
-                }),
-                el('button', { class: 'btn btn-small catalog-search-btn', attrs: { type: 'submit' } }, 'Search')
+        const priceGroup = el('div', { class: 'filter-group' },
+            el('div', { class: 'filter-group-header' },
+                el('span', { class: 'filter-title' }, 'Price Range')
             )
         );
-        panelBody.appendChild(header);
-        panel.appendChild(panelBody);
-        rootEl.appendChild(panel);
+        const sliderWrap = el('div', { class: 'price-slider' });
+        const priceValueLabel = el('span', { class: 'price-value tiny muted' }, maxPrice ? `Up to ${money(maxPrice)}` : 'All prices');
+        const priceSlider = el('input', {
+            class: 'price-input',
+            attrs: {
+                type: 'range',
+                min: String(minPrice),
+                max: String(maxPrice || 0),
+                value: String(maxPrice || 0),
+                step: '1000'
+            }
+        });
+        sliderWrap.appendChild(priceSlider);
+        sliderWrap.appendChild(priceValueLabel);
+        priceGroup.appendChild(sliderWrap);
+        filterContent.appendChild(priceGroup);
 
-        const searchForm = header.querySelector('#catalog-search-form');
-        const searchInput = header.querySelector('#catalog-search-input');
+        const ratingGroup = el('div', { class: 'filter-group' },
+            el('div', { class: 'filter-group-header' },
+                el('span', { class: 'filter-title' }, 'Minimum Rating')
+            )
+        );
+        const ratingList = el('div', { class: 'filter-list rating-list' });
+        const ratingButtons = [4, 3, 2, 1].map(star => {
+            const btn = el('button', {
+                class: 'rating-chip',
+                attrs: { type: 'button', 'data-rating': String(star) }
+            }, `${star}+ stars`);
+            ratingList.appendChild(btn);
+            return btn;
+        });
+        ratingGroup.appendChild(ratingList);
+        filterContent.appendChild(ratingGroup);
 
+        const availabilityGroup = el('div', { class: 'filter-group' },
+            el('div', { class: 'filter-group-header' },
+                el('span', { class: 'filter-title' }, 'Availability')
+            )
+        );
+        const inStockToggle = el('label', { class: 'filter-checkbox' },
+            el('input', { attrs: { type: 'checkbox', id: 'filter-in-stock' } }),
+            el('span', {}, 'In stock only')
+        );
+        availabilityGroup.appendChild(inStockToggle);
+        filterContent.appendChild(availabilityGroup);
+
+        aside.appendChild(filterContent);
+        layout.appendChild(aside);
+
+        const productsWrap = el('section', { class: 'catalog-products' });
         const grid = el('div', { class: 'catalog-grid' });
-        panelBody.appendChild(grid);
+        productsWrap.appendChild(grid);
+        layout.appendChild(productsWrap);
+        page.appendChild(layout);
+
+        rootEl.appendChild(page);
 
         let productsShown = baseProducts.slice();
+        const filtersState = {
+            searchTerm: '',
+            categories: new Set(),
+            maxPrice: maxPrice || 0,
+            minRating: 0,
+            inStockOnly: false,
+            sort: 'recommended'
+        };
 
-        function buildCard(p) {
-            const card = el('article', { class: 'product-card catalog-card', attrs: { 'data-id': p.id } });
+        function productCategoryLabel(product) {
+            const tags = Array.isArray(product.tags) ? product.tags : [];
+            if (tags.length) {
+                return (tags[0] || '').toString().replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            }
+            return 'Collection';
+        }
+
+        function productIsNew(product) {
+            const created = new Date(product.createdAt || '').getTime();
+            if (!Number.isFinite(created)) return false;
+            const THIRTY_DAYS = 1000 * 60 * 60 * 24 * 30;
+            return (Date.now() - created) <= THIRTY_DAYS;
+        }
+
+        function productDiscount(product) {
+            const compare = product.compareAtPriceCents;
+            const price = product.priceCents;
+            if (compare && compare > price) {
+                const percent = Math.round(((compare - price) / compare) * 100);
+                return percent > 0 ? percent : 0;
+            }
+            const match = (Array.isArray(product.tags) ? product.tags : [])
+                .map(t => String(t))
+                .find(t => /(\d+)%/.test(t));
+            if (match) {
+                const num = parseInt(match, 10);
+                return Number.isFinite(num) ? num : 0;
+            }
+            return 0;
+        }
+
+        function buildCard(product) {
+            const card = el('article', { class: 'catalog-card', attrs: { 'data-id': product.id } });
+            const badges = el('div', { class: 'catalog-card-badges' });
+            if (productIsNew(product)) badges.appendChild(el('span', { class: 'catalog-badge badge-new' }, 'New'));
+            const discount = productDiscount(product);
+            if (discount > 0) badges.appendChild(el('span', { class: 'catalog-badge badge-sale' }, `-${discount}%`));
+
+            const favActive = isFavorite(product.id);
+            const favButton = el('button', {
+                class: 'catalog-card-fav' + (favActive ? ' active' : ''),
+                attrs: {
+                    type: 'button',
+                    'data-fav': product.id,
+                    'aria-pressed': favActive ? 'true' : 'false',
+                    title: favActive ? 'Remove from favorites' : 'Add to favorites'
+                }
+            }, favActive ? '♥' : '♡');
 
             const media = el('div', { class: 'catalog-card-media' },
                 el('img', {
                     attrs: {
-                        src: p.images && p.images[0] ? p.images[0] : productPlaceholder(640),
-                        alt: p.title,
+                        src: (Array.isArray(product.images) && product.images[0]) || productPlaceholder(720),
+                        alt: product.title || 'Product photo',
                         loading: 'lazy'
                     }
-                })
+                }),
+                badges,
+                favButton
             );
             card.appendChild(media);
 
-            card.appendChild(el('h3', { class: 'product-title catalog-card-title' }, p.title));
+            const body = el('div', { class: 'catalog-card-body' });
+            body.appendChild(el('span', { class: 'catalog-card-category tiny muted' }, productCategoryLabel(product)));
+            body.appendChild(el('h3', { class: 'catalog-card-title' }, product.title || 'Product'));
 
-            const priceLine = el('div', { class: 'catalog-card-meta' },
-                el('span', { class: 'price catalog-card-price', attrs: { 'data-price-cents': p.priceCents } }, money(p.priceCents)),
-                inventoryBadge(p)
-            );
-            card.appendChild(priceLine);
-
-            if (p.reviewSummary && p.reviewSummary.count > 0) {
-                const rating = renderStarRating(p.reviewSummary.average, p.reviewSummary.count, { size: 'xs' });
+            if (product.reviewSummary && product.reviewSummary.count > 0) {
+                const rating = renderStarRating(product.reviewSummary.average, product.reviewSummary.count, { size: 'sm' });
                 rating.classList.add('catalog-card-rating');
-                card.appendChild(rating);
+                body.appendChild(rating);
             }
 
-            const favActive = isFavorite(p.id);
-            const actions = el('div', { class: 'catalog-card-actions' },
-                el('button', { class: 'btn btn-small catalog-action-view', attrs: { 'data-view-id': p.id, type: 'button' } }, 'View'),
-                el('button', { class: 'btn btn-small btn-outline catalog-action-add', attrs: { 'data-add': p.id, type: 'button' } }, 'Add'),
-                el('button', {
-                    class: 'catalog-fav-btn' + (favActive ? ' active' : ''),
-                    attrs: {
-                        'data-fav': p.id,
-                        'aria-pressed': favActive ? 'true' : 'false',
-                        type: 'button',
-                        title: favActive ? 'Remove from favorites' : 'Add to favorites'
-                    }
-                }, favActive ? '♥' : '♡')
+            const priceWrap = el('div', { class: 'catalog-card-pricing' },
+                el('span', { class: 'catalog-card-price', attrs: { 'data-price-cents': product.priceCents } }, money(product.priceCents))
             );
-            card.appendChild(actions);
+            if (product.compareAtPriceCents && product.compareAtPriceCents > product.priceCents) {
+                priceWrap.appendChild(el('span', { class: 'catalog-card-price-compare' }, money(product.compareAtPriceCents)));
+            }
+            body.appendChild(priceWrap);
 
+            const footer = el('div', { class: 'catalog-card-footer' },
+                el('button', {
+                    class: 'catalog-card-add',
+                    attrs: { type: 'button', 'data-add': product.id }
+                }, 'Add to Cart'),
+                el('button', {
+                    class: 'catalog-card-view',
+                    attrs: { type: 'button', 'data-view-id': product.id }
+                }, 'View Details')
+            );
+            body.appendChild(footer);
+
+            card.appendChild(body);
             return card;
         }
 
@@ -2713,87 +2630,173 @@
             grid.innerHTML = '';
             if (!productsShown.length) {
                 grid.classList.add('is-empty');
-                grid.appendChild(el('div', { class: 'catalog-empty-state' }, 'No products match your search right now.'));
-                updateFavoriteIcons(panel);
-                return;
+                grid.appendChild(el('div', { class: 'catalog-empty-state' }, 'No products match your filters right now.'));
+            } else {
+                grid.classList.remove('is-empty');
+                productsShown.forEach(p => grid.appendChild(buildCard(p)));
             }
-            grid.classList.remove('is-empty');
-            productsShown.forEach(p => grid.appendChild(buildCard(p)));
-            updateFavoriteIcons(panel);
+            updateFavoriteIcons(page);
+            const count = productsShown.length;
+            resultCountEl.textContent = count === 1 ? '1 product found' : `${count} products found`;
         }
 
-        grid.addEventListener('click', (e) => {
-            const favBtn = e.target.closest('[data-fav]');
+        function applyFilters() {
+            const term = filtersState.searchTerm.toLowerCase();
+            const activeCategories = filtersState.categories;
+            const maxPriceCents = filtersState.maxPrice || maxPrice;
+            const minRating = filtersState.minRating;
+            const inStockOnly = filtersState.inStockOnly;
+
+            let filtered = baseProducts.filter(product => {
+                if (term) {
+                    const title = (product.title || '').toLowerCase();
+                    const desc = (product.description || '').toLowerCase();
+                    const tags = Array.isArray(product.tags) ? product.tags : [];
+                    if (!title.includes(term) && !desc.includes(term) && !tags.some(t => (t || '').toLowerCase().includes(term))) {
+                        return false;
+                    }
+                }
+                if (activeCategories.size) {
+                    const tags = new Set((Array.isArray(product.tags) ? product.tags : []).map(t => (t || '').toLowerCase()));
+                    if (!Array.from(activeCategories).some(cat => tags.has(cat))) return false;
+                }
+                if (maxPriceCents && product.priceCents != null && product.priceCents > maxPriceCents) return false;
+                if (minRating > 0) {
+                    const avg = product.reviewSummary && product.reviewSummary.count > 0 ? product.reviewSummary.average : 0;
+                    if (!avg || avg < minRating) return false;
+                }
+                if (inStockOnly && productStock(product) <= 0) return false;
+                return true;
+            });
+
+            const sortKey = filtersState.sort;
+            const collator = new Intl.Collator('en');
+            filtered.sort((a, b) => {
+                if (sortKey === 'price-asc') return (a.priceCents || 0) - (b.priceCents || 0);
+                if (sortKey === 'price-desc') return (b.priceCents || 0) - (a.priceCents || 0);
+                if (sortKey === 'newest') {
+                    const aDate = new Date(a.createdAt || 0).getTime();
+                    const bDate = new Date(b.createdAt || 0).getTime();
+                    return (Number.isFinite(bDate) ? bDate : 0) - (Number.isFinite(aDate) ? aDate : 0);
+                }
+                const aScore = (productIsNew(a) ? 1000 : 0) + ((a.reviewSummary?.average || 0) * 10);
+                const bScore = (productIsNew(b) ? 1000 : 0) + ((b.reviewSummary?.average || 0) * 10);
+                if (bScore !== aScore) return bScore - aScore;
+                return collator.compare(a.title || '', b.title || '');
+            });
+
+            productsShown = filtered;
+            renderItems();
+        }
+
+        grid.addEventListener('click', event => {
+            const favBtn = event.target.closest('[data-fav]');
             if (favBtn) {
-                e.preventDefault();
+                event.preventDefault();
                 toggleFavorite(favBtn.getAttribute('data-fav'));
-                updateFavoriteIcons(panel);
+                updateFavoriteIcons(page);
                 return;
             }
-            const addBtn = e.target.closest('[data-add]');
+            const addBtn = event.target.closest('[data-add]');
             if (addBtn) {
                 addToCart(addBtn.getAttribute('data-add'), 1);
                 return;
             }
-            const viewBtn = e.target.closest('[data-view-id]');
+            const viewBtn = event.target.closest('[data-view-id]');
             if (viewBtn) {
                 navigate('product', { id: viewBtn.getAttribute('data-view-id') });
             }
         });
 
-        const runSearch = () => {
-            const normalizedTerm = (searchInput?.value || '').trim().toLowerCase();
-            if (!normalizedTerm) {
-                productsShown = baseProducts.slice();
-            } else {
-                productsShown = baseProducts.filter(p => {
-                    const title = (p.title || '').toLowerCase();
-                    const desc = (p.description || '').toLowerCase();
-                    const tags = Array.isArray(p.tags) ? p.tags : [];
-                    return title.includes(normalizedTerm) || desc.includes(normalizedTerm) || tags.some(t => (t || '').toLowerCase().includes(normalizedTerm));
-                });
-            }
-            renderItems();
-            syncHeroFilters(normalizedTerm);
-        };
+        const searchInput = searchForm.querySelector('input[type="search"]');
+        searchForm.addEventListener('submit', event => {
+            event.preventDefault();
+            filtersState.searchTerm = searchInput.value || '';
+            applyFilters();
+        });
+        searchInput.addEventListener('input', () => {
+            filtersState.searchTerm = searchInput.value || '';
+            if (!filtersState.searchTerm.trim()) applyFilters();
+        });
 
-        heroFilters.forEach(btn => {
-            btn.addEventListener('click', () => {
-                const term = btn.getAttribute('data-term') || '';
-                if (searchInput) {
-                    searchInput.value = term;
-                    runSearch();
-                    try { searchInput.focus(); } catch { /* no-op */ }
-                } else {
-                    state.pendingCatalogSearchTerm = term;
-                }
-                if (typeof panel.scrollIntoView === 'function') {
-                    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                }
+        categoryCheckboxes.forEach(inputEl => {
+            inputEl.addEventListener('change', () => {
+                const value = (inputEl.value || '').toLowerCase();
+                if (!value) return;
+                if (inputEl.checked) filtersState.categories.add(value); else filtersState.categories.delete(value);
+                applyFilters();
             });
         });
 
-        searchForm?.addEventListener('submit', (e) => {
-            e.preventDefault();
-            runSearch();
+        if (maxPrice) {
+            priceSlider.addEventListener('input', () => {
+                const val = parseInt(priceSlider.value, 10);
+                if (Number.isFinite(val)) {
+                    filtersState.maxPrice = val;
+                    priceValueLabel.textContent = `Up to ${money(val)}`;
+                    applyFilters();
+                }
+            });
+        } else {
+            priceSlider.disabled = true;
+            priceValueLabel.textContent = 'All prices';
+        }
+
+        ratingButtons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const rating = parseInt(btn.getAttribute('data-rating') || '0', 10) || 0;
+                filtersState.minRating = filtersState.minRating === rating ? 0 : rating;
+                ratingButtons.forEach(b => b.classList.toggle('active', parseInt(b.getAttribute('data-rating') || '0', 10) === filtersState.minRating));
+                applyFilters();
+            });
         });
 
-        searchInput?.addEventListener('input', () => {
-            if (!(searchInput.value || '').trim()) runSearch();
+        const inStockInput = inStockToggle.querySelector('input');
+        inStockInput.addEventListener('change', () => {
+            filtersState.inStockOnly = !!inStockInput.checked;
+            applyFilters();
         });
 
-        // Initial render
-        renderItems();
-        syncHeroFilters((searchInput?.value || '').trim().toLowerCase());
+        const sortSelect = actionsGroup.querySelector('select');
+        sortSelect.addEventListener('change', () => {
+            filtersState.sort = sortSelect.value;
+            applyFilters();
+        });
+
+        const viewButtons = Array.from(actionsGroup.querySelectorAll('.view-btn'));
+        viewButtons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                if (btn.disabled) return;
+                viewButtons.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+            });
+        });
+
+        filterHeader.querySelector('.filters-clear').addEventListener('click', () => {
+            filtersState.searchTerm = '';
+            filtersState.categories.clear();
+            filtersState.maxPrice = maxPrice || 0;
+            filtersState.minRating = 0;
+            filtersState.inStockOnly = false;
+            filtersState.sort = 'recommended';
+            searchInput.value = '';
+            categoryCheckboxes.forEach(cb => { cb.checked = false; });
+            if (!priceSlider.disabled) priceSlider.value = String(maxPrice || 0);
+            priceValueLabel.textContent = maxPrice ? `Up to ${money(maxPrice)}` : 'All prices';
+            ratingButtons.forEach(b => b.classList.remove('active'));
+            inStockInput.checked = false;
+            sortSelect.value = 'recommended';
+            applyFilters();
+        });
+
         if (state.pendingCatalogSearchTerm) {
             const term = state.pendingCatalogSearchTerm;
             state.pendingCatalogSearchTerm = '';
-            if (searchInput) {
-                searchInput.value = term;
-                runSearch();
-                try { searchInput.focus(); } catch { /* no-op */ }
-            }
+            searchInput.value = term;
+            filtersState.searchTerm = term;
         }
+
+        applyFilters();
     }
 
     function productStock(p) {
