@@ -259,6 +259,8 @@ const insertReviewStmt = db.prepare(`INSERT INTO reviews (id, productId, userId,
 const updateReviewStatusStmt = db.prepare('UPDATE reviews SET status = @status, moderatedAt = @moderatedAt, moderatedBy = @moderatedBy, moderationNotes = @moderationNotes, updatedAt = @updatedAt WHERE id = @id');
 const selectOrderForReviewStmt = db.prepare('SELECT id, status, customerEmail, paymentProvider, paidAt FROM orders WHERE id = ?');
 const selectOrderItemsForReviewStmt = db.prepare('SELECT productId, variantId, quantity FROM order_items WHERE orderId = ? AND productId = ?');
+const insertRefundMessageStmt = db.prepare('INSERT INTO refund_messages (id, orderId, authorRole, authorName, authorEmail, body, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)');
+const selectRefundMessagesStmt = db.prepare('SELECT id, orderId, authorRole, authorName, authorEmail, body, createdAt FROM refund_messages WHERE orderId=? ORDER BY createdAt ASC');
 
 // --- Lightweight one-time migrations (idempotent) ---
 try { db.prepare("ALTER TABLE orders ADD COLUMN shippingCents INTEGER DEFAULT 0").run(); } catch { }
@@ -1380,10 +1382,102 @@ app.post('/api/orders/:id/return-request', (req, res) => {
   if (!order.shippedAt) return res.status(400).json({ error: 'Not shipped yet' });
   if (order.returnRequestedAt) return res.status(400).json({ error: 'Return already requested' });
   const now = new Date().toISOString();
-  db.prepare('UPDATE orders SET returnRequestedAt=?, returnReason=? WHERE id=?').run(now, reason.slice(0, 500), order.id);
+  const reasonText = reason ? String(reason).slice(0, 1000) : '';
+  db.prepare('UPDATE orders SET returnRequestedAt=?, returnReason=?, returnAdminStatus=? WHERE id=?').run(now, reasonText, 'pending', order.id);
   db.prepare('INSERT INTO order_events(id,orderId,status,at) VALUES(?,?,?,?)').run(uuidv4(), order.id, 'return_requested', now);
+  try {
+    insertRefundMessageStmt.run(uuidv4(), order.id, 'customer', order.customerName || null, order.customerEmail || null, reasonText || 'Customer requested a return/refund.', now);
+  } catch (err) {
+    console.warn('[refund] unable to store customer note', err.message);
+  }
   audit('order', order.id, 'return-request', order, { returnRequestedAt: now });
   res.json({ returnRequested: true, at: now });
+});
+
+app.get('/api/orders/:id/refund-messages', (req, res) => {
+  const order = db.prepare('SELECT id, customerEmail FROM orders WHERE id=?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  const adminView = isAdmin(req);
+  let canView = adminView;
+  if (!canView) {
+    const session = getCustomerSession(req);
+    const email = session?.user?.email?.trim().toLowerCase();
+    const orderEmail = (order.customerEmail || '').trim().toLowerCase();
+    if (email && orderEmail && email === orderEmail) canView = true;
+  }
+  if (!canView) return res.status(401).json({ error: 'Unauthorized' });
+  const messages = selectRefundMessagesStmt.all(order.id);
+  const safeMessages = adminView ? messages : messages.map(msg => ({
+    ...msg,
+    authorEmail: msg.authorRole === 'customer' ? msg.authorEmail : null
+  }));
+  res.json({ orderId: order.id, messages: safeMessages });
+});
+
+app.post('/api/orders/:id/refund-messages', (req, res) => {
+  const order = db.prepare('SELECT id, customerEmail, customerName, returnRequestedAt FROM orders WHERE id=?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  const { message } = req.body || {};
+  const text = typeof message === 'string' ? message.trim() : '';
+  if (!text) return res.status(400).json({ error: 'Message required' });
+  const now = new Date().toISOString();
+  const id = uuidv4();
+  const adminView = isAdmin(req);
+  const session = getCustomerSession(req);
+  const sessionEmail = session?.user?.email?.trim().toLowerCase();
+  const orderEmail = (order.customerEmail || '').trim().toLowerCase();
+  const ownsOrder = !!(sessionEmail && orderEmail && sessionEmail === orderEmail);
+  if (!adminView && !ownsOrder) return res.status(401).json({ error: 'Unauthorized' });
+  if (!adminView && !order.returnRequestedAt) return res.status(400).json({ error: 'No refund request on file' });
+  const role = adminView ? 'admin' : 'customer';
+  const authorName = adminView ? (ADMIN_NAME || 'Store Admin') : (session?.user?.name || order.customerName || 'Customer');
+  const authorEmail = adminView ? (ADMIN_EMAIL || null) : (session?.user?.email || order.customerEmail || null);
+  const limited = text.slice(0, 2000);
+  insertRefundMessageStmt.run(id, order.id, role, authorName, authorEmail, limited, now);
+  audit('order', order.id, 'refund-message', null, { author: role, body: limited });
+  const response = {
+    id,
+    orderId: order.id,
+    authorRole: role,
+    authorName,
+    authorEmail: adminView || role === 'customer' ? authorEmail : null,
+    body: limited,
+    createdAt: now
+  };
+  res.status(201).json({ message: response });
+});
+
+app.post('/api/orders/:id/refund-response', requireAdmin, (req, res) => {
+  const order = db.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  if (!order.returnRequestedAt) return res.status(400).json({ error: 'No refund requested' });
+  const { status, notes = '', message = '', usageNotes = '' } = req.body || {};
+  const allowed = new Set(['pending', 'in_review', 'approved', 'refunded', 'declined']);
+  const normalized = (typeof status === 'string' ? status.toLowerCase().replace(/\s+/g, '_') : '').trim();
+  const finalStatus = allowed.has(normalized) ? normalized : 'in_review';
+  const now = new Date().toISOString();
+  const safeNotes = typeof notes === 'string' ? notes.trim().slice(0, 2000) : '';
+  const safeUsage = typeof usageNotes === 'string' ? usageNotes.trim().slice(0, 1000) : '';
+  db.prepare('UPDATE orders SET returnAdminStatus=?, returnAdminNotes=?, returnAdminRespondedAt=?, returnUsageNotes=? WHERE id=?')
+    .run(finalStatus, safeNotes || null, now, safeUsage || null, order.id);
+  db.prepare('INSERT INTO order_events(id,orderId,status,at) VALUES(?,?,?,?)').run(uuidv4(), order.id, 'return_admin_response', now);
+  audit('order', order.id, 'refund-response', { returnAdminStatus: order.returnAdminStatus, returnAdminNotes: order.returnAdminNotes }, { returnAdminStatus: finalStatus, returnAdminNotes: safeNotes || null, returnUsageNotes: safeUsage || null });
+  let postedMessage = null;
+  const trimmedMessage = typeof message === 'string' ? message.trim() : '';
+  if (trimmedMessage) {
+    const limited = trimmedMessage.slice(0, 2000);
+    const id = uuidv4();
+    insertRefundMessageStmt.run(id, order.id, 'admin', ADMIN_NAME || 'Store Admin', ADMIN_EMAIL || null, limited, now);
+    postedMessage = { id, orderId: order.id, authorRole: 'admin', authorName: ADMIN_NAME || 'Store Admin', authorEmail: ADMIN_EMAIL || null, body: limited, createdAt: now };
+  }
+  res.json({
+    orderId: order.id,
+    status: finalStatus,
+    notes: safeNotes || null,
+    respondedAt: now,
+    usageNotes: safeUsage || null,
+    message: postedMessage
+  });
 });
 
 // ---------- Admin Authentication ----------
@@ -1483,7 +1577,7 @@ app.get('/api/my-orders', (req, res) => {
   }
   const email = session.user.email.trim().toLowerCase();
   if (!email) return res.status(401).json({ error: 'Sign-in required' });
-  const rows = db.prepare('SELECT id,status,createdAt,paidAt,fulfilledAt,shippedAt,cancelledAt,completedAt,returnRequestedAt,returnReason,subtotalCents,discountCents,totalCents,shippingCents,shippingDiscountCents,discountCode,shippingCode FROM orders WHERE LOWER(customerEmail)=LOWER(?) ORDER BY createdAt DESC LIMIT 200').all(email);
+  const rows = db.prepare('SELECT id,status,createdAt,paidAt,fulfilledAt,shippedAt,cancelledAt,completedAt,returnRequestedAt,returnReason,returnAdminStatus,returnAdminRespondedAt,subtotalCents,discountCents,totalCents,shippingCents,shippingDiscountCents,discountCode,shippingCode FROM orders WHERE LOWER(customerEmail)=LOWER(?) ORDER BY createdAt DESC LIMIT 200').all(email);
   res.json({ orders: rows });
 });
 

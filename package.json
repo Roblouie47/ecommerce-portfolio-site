@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "start": "node server.js",
-    "dev": "npm --prefix client run dev"
+    "dev": "npm --prefix client run dev",
+    "server:portable": "node-portable\\node.exe server.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
