@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS orders (
   completedAt TEXT,
   returnRequestedAt TEXT,
   returnReason TEXT,
+  returnAdminStatus TEXT NOT NULL DEFAULT 'pending',
+  returnAdminNotes TEXT,
+  returnAdminRespondedAt TEXT,
+  returnUsageNotes TEXT,
   stripeSessionId TEXT,
   stripePaymentIntentId TEXT,
   paymentProvider TEXT,
@@ -91,6 +95,15 @@ CREATE TABLE IF NOT EXISTS order_items (
   titleSnapshot TEXT,
   quantity INTEGER NOT NULL,
   unitPriceCents INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS refund_messages (
+  id TEXT PRIMARY KEY,
+  orderId TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  authorRole TEXT NOT NULL,
+  authorName TEXT,
+  authorEmail TEXT,
+  body TEXT NOT NULL,
+  createdAt TEXT NOT NULL
 );
 -- Accounts & Auth
 CREATE TABLE IF NOT EXISTS users (
@@ -165,7 +178,7 @@ CREATE TABLE IF NOT EXISTS bundle_items (
 
 // Lightweight migration: add deletedAt if missing
 try {
-  const cols = db.prepare("PRAGMA table_info(products)").all();
+  const cols = /** @type {Array<{name: string}>} */ (db.prepare("PRAGMA table_info(products)").all());
   if (!cols.some(c => c.name === 'deletedAt')) {
     db.exec('ALTER TABLE products ADD COLUMN deletedAt TEXT');
   }
@@ -175,7 +188,7 @@ try {
 
 // Order status columns migration
 try {
-  const ocols = db.prepare("PRAGMA table_info(orders)").all();
+  const ocols = /** @type {Array<{name: string}>} */ (db.prepare("PRAGMA table_info(orders)").all());
   const need = (name) => !ocols.some(c => c.name === name);
   if (need('shippingCents')) db.exec('ALTER TABLE orders ADD COLUMN shippingCents INTEGER NOT NULL DEFAULT 0');
   if (need('shippingDiscountCents')) db.exec('ALTER TABLE orders ADD COLUMN shippingDiscountCents INTEGER NOT NULL DEFAULT 0');
@@ -189,6 +202,10 @@ try {
   if (need('completedAt')) db.exec('ALTER TABLE orders ADD COLUMN completedAt TEXT');
   if (need('returnRequestedAt')) db.exec('ALTER TABLE orders ADD COLUMN returnRequestedAt TEXT');
   if (need('returnReason')) db.exec('ALTER TABLE orders ADD COLUMN returnReason TEXT');
+  if (need('returnAdminStatus')) db.exec("ALTER TABLE orders ADD COLUMN returnAdminStatus TEXT DEFAULT 'pending'");
+  if (need('returnAdminNotes')) db.exec('ALTER TABLE orders ADD COLUMN returnAdminNotes TEXT');
+  if (need('returnAdminRespondedAt')) db.exec('ALTER TABLE orders ADD COLUMN returnAdminRespondedAt TEXT');
+  if (need('returnUsageNotes')) db.exec('ALTER TABLE orders ADD COLUMN returnUsageNotes TEXT');
   if (need('stripeSessionId')) db.exec('ALTER TABLE orders ADD COLUMN stripeSessionId TEXT');
   if (need('stripePaymentIntentId')) db.exec('ALTER TABLE orders ADD COLUMN stripePaymentIntentId TEXT');
   if (need('paymentProvider')) db.exec('ALTER TABLE orders ADD COLUMN paymentProvider TEXT');
@@ -198,7 +215,7 @@ try {
 
 // Order items variant column migration
 try {
-  const oicols = db.prepare('PRAGMA table_info(order_items)').all();
+  const oicols = /** @type {Array<{name: string}>} */ (db.prepare('PRAGMA table_info(order_items)').all());
   if (!oicols.some(c => c.name === 'variantId')) {
     db.exec('ALTER TABLE order_items ADD COLUMN variantId TEXT');
   }
@@ -235,7 +252,7 @@ try {
 
 // Add new columns to existing discounts table if missing
 try {
-  const dcols = db.prepare('PRAGMA table_info(discounts)').all();
+  const dcols = /** @type {Array<{name: string}>} */ (db.prepare('PRAGMA table_info(discounts)').all());
   const need = (n) => !dcols.some(c => c.name === n);
   if (need('disabledAt')) db.exec('ALTER TABLE discounts ADD COLUMN disabledAt TEXT');
   if (need('usageCount')) db.exec('ALTER TABLE discounts ADD COLUMN usageCount INTEGER NOT NULL DEFAULT 0');
@@ -245,7 +262,7 @@ try {
 
 // Reviews table migration for moderation fields
 try {
-  const rcols = db.prepare('PRAGMA table_info(reviews)').all();
+  const rcols = /** @type {Array<{name: string}>} */ (db.prepare('PRAGMA table_info(reviews)').all());
   const need = (n) => !rcols.some(c => c.name === n);
   if (need('orderId')) db.exec('ALTER TABLE reviews ADD COLUMN orderId TEXT REFERENCES orders(id) ON DELETE SET NULL');
   if (need('variantId')) db.exec('ALTER TABLE reviews ADD COLUMN variantId TEXT REFERENCES variants(id) ON DELETE SET NULL');
@@ -261,7 +278,8 @@ try {
 }
 
 // Seed if empty
-const c = db.prepare('SELECT COUNT(*) as c FROM products').get().c;
+const cRow = /** @type {{ c: number }} */ (db.prepare('SELECT COUNT(*) as c FROM products').get());
+const c = cRow.c;
 if (c === 0) {
   const now = new Date().toISOString();
   const pid = uuid();

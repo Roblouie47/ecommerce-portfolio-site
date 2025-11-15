@@ -13,6 +13,32 @@
         return `${PRODUCT_PLACEHOLDER_BASE}?auto=format&fit=crop&w=${safeWidth}&q=80`;
     }
 
+    async function copyTextToClipboard(value) {
+        if (!value) return;
+        try {
+            if (navigator?.clipboard?.writeText) {
+                await navigator.clipboard.writeText(value);
+                return;
+            }
+        } catch (err) {
+            console.warn('navigator clipboard copy failed', err);
+        }
+        try {
+            const area = document.createElement('textarea');
+            area.value = value;
+            area.setAttribute('readonly', 'true');
+            area.style.position = 'absolute';
+            area.style.left = '-9999px';
+            document.body.appendChild(area);
+            area.select();
+            document.execCommand('copy');
+            document.body.removeChild(area);
+        } catch (fallbackErr) {
+            console.warn('fallback copy failed', fallbackErr);
+            throw fallbackErr;
+        }
+    }
+
     function renderProductReviews(productId) {
         const prod = state.productsById.get(productId) || state.productsById.get(String(productId)) || state.productsById.get(Number(productId));
         if (!prod || prod.deletedAt) {
@@ -40,9 +66,15 @@
 
         const summaryBox = el('div', { class: 'review-summary-box flex flex-col gap-sm' });
         panel.appendChild(summaryBox);
-        const pendingNotice = el('div', { class: 'alert alert-info hidden', attrs: { id: 'review-pending-note' } }, 'Thanks! Your review is pending moderation. Approved reviews appear below once moderated.');
-        panel.appendChild(pendingNotice);
+        let data = {
+            summary: prod.reviewSummary || { count: 0, average: null, totalQuantity: 0, distribution: {} },
+            reviews: []
+        };
+        const cached = state.reviewsByProduct.get(prod.id);
+        if (cached) data = cached;
+        const reviewList = el('div', { class: 'review-list flex flex-col gap-md', attrs: { id: 'product-review-list' } });
         panel.appendChild(reviewList);
+        panel.appendChild(el('div', { class: 'alert alert-info review-view-only-note' }, 'Reviews are currently read-only. Check back soon for new stories.'));
 
         function renderSummary(summary) {
             summaryBox.innerHTML = '';
@@ -72,119 +104,51 @@
             summaryBox.appendChild(distList);
         }
 
+        function renderReviews(reviews) {
+            reviewList.innerHTML = '';
+            const safeReviews = Array.isArray(reviews) ? reviews : [];
+            if (!safeReviews.length) {
+                reviewList.appendChild(el('div', { class: 'muted tiny' }, 'No reviews yet. Be the first to share your story.'));
+                return;
+            }
+            for (const review of safeReviews) {
+                const createdAt = review?.createdAt ? new Date(review.createdAt) : null;
+                reviewList.appendChild(el('article', { class: 'review-card flex flex-col gap-sm' },
+                    el('div', { class: 'review-card-header flex gap-sm align-center justify-between flex-wrap' },
+                        el('div', { class: 'flex gap-sm align-center' },
+                            renderStarRating(review?.rating ?? null, null, { size: 'sm' }),
+                            el('span', { class: 'review-author' }, review?.authorName || 'Verified buyer')
+                        ),
+                        createdAt ? el('span', { class: 'tiny muted' }, createdAt.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })) : null
+                    ),
+                    review?.title ? el('h4', { class: 'review-title' }, review.title) : null,
+                    el('p', { class: 'review-body' }, review?.body || 'No review text provided.'),
+                    review?.quantityPurchased ? el('span', { class: 'review-extra tiny muted' }, `Purchased ${review.quantityPurchased} unit${review.quantityPurchased === 1 ? '' : 's'}`) : null
+                ));
+            }
+        }
+
         async function hydrateReviews(force = false) {
             try {
-                renderSummary(data.summary);
-                renderReviews(data.reviews);
+                data = await fetchProductReviews(prod.id, { force });
+                const summary = data?.summary || prod.reviewSummary;
+                renderSummary(summary);
+                renderReviews(data?.reviews);
                 const entry = state.productsById.get(prod.id);
-                if (entry) entry.reviewSummary = data.summary;
-                prod.reviewSummary = data.summary;
+                if (entry && summary) entry.reviewSummary = summary;
+                if (summary) prod.reviewSummary = summary;
                 const idx = state.products.findIndex(p => p.id === prod.id);
-                if (idx >= 0) state.products[idx] = { ...state.products[idx], reviewSummary: data.summary };
+                if (idx >= 0 && summary) state.products[idx] = { ...state.products[idx], reviewSummary: summary };
             } catch (err) {
                 reviewList.innerHTML = '';
                 reviewList.appendChild(el('div', { class: 'alert alert-error' }, 'Failed to load reviews: ' + err.message));
             }
         }
 
-        function buildReviewForm() {
-            const form = el('form', { class: 'review-form flex flex-col gap-sm', attrs: { id: 'product-review-form' } },
-                el('h4', {}, 'Share your experience'),
-                fieldInput('Display name (optional)', 'review-name'),
-                fieldInput('Email used at checkout', 'review-email', 'email', true),
-                fieldInput('Order ID', 'review-order', 'text', true),
-                (function () {
-                    const field = el('div', { class: 'field' });
-                    field.appendChild(el('label', { attrs: { for: 'review-rating' } }, 'Rating'));
-                    const sel = el('select', { attrs: { id: 'review-rating', required: 'true' } },
-                        ...[5, 4, 3, 2, 1].map(v => el('option', { attrs: { value: String(v) } }, `${v} – ${['Poor', 'Fair', 'Good', 'Very Good', 'Excellent'][5 - v] || ''}`))
-                    );
-                    field.appendChild(sel);
-                    return field;
-                })(),
-                fieldInput('Review title (optional)', 'review-title'),
-                (function () {
-                    const field = el('div', { class: 'field' });
-                    field.appendChild(el('label', { attrs: { for: 'review-body' } }, 'Review'));
-                    field.appendChild(el('textarea', { attrs: { id: 'review-body', rows: '4', required: 'true', placeholder: 'Tell other shoppers what stood out.' } }));
-                    return field;
-                })(),
-                el('div', { class: 'form-actions flex gap-sm' },
-                    el('button', { class: 'btn btn-success', attrs: { type: 'submit' } }, 'Submit Review'),
-                    el('button', { class: 'btn btn-outline', attrs: { type: 'button', id: 'refresh-reviews' } }, 'Refresh')
-                ),
-                el('div', { class: 'tiny muted', attrs: { id: 'review-form-status' } }, '')
-            );
-
-            const defaultEmail = localStorage.getItem('customerEmail') || state.lastOrder?.customer?.email || '';
-            if (defaultEmail) form.querySelector('#review-email').value = defaultEmail;
-
-            const defaultName = state.lastOrder?.customer?.name || '';
-            if (defaultName) form.querySelector('#review-name').value = defaultName;
-
-            const defaultOrderId = (() => {
-                const last = state.lastOrder;
-                if (last && last.id && Array.isArray(last.lines) && last.lines.some(line => line.productId === prod.id)) {
-                    return last.id;
-                }
-                const urlOrder = new URLSearchParams(location.search).get('orderId');
-                return urlOrder && urlOrder.length > 6 ? urlOrder : '';
-            })();
-            if (defaultOrderId) form.querySelector('#review-order').value = defaultOrderId;
-
-            form.querySelector('#review-rating').value = '5';
-
-            let submitting = false;
-            const statusBox = form.querySelector('#review-form-status');
-
-            form.addEventListener('submit', async (e) => {
-                e.preventDefault();
-                if (submitting) return;
-                const payload = {
-                    name: form.querySelector('#review-name').value.trim() || undefined,
-                    email: form.querySelector('#review-email').value.trim(),
-                    orderId: form.querySelector('#review-order').value.trim(),
-                    rating: parseInt(form.querySelector('#review-rating').value, 10),
-                    title: form.querySelector('#review-title').value.trim() || undefined,
-                    body: form.querySelector('#review-body').value.trim()
-                };
-                if (!payload.email || !payload.orderId || !payload.body) {
-                    statusBox.textContent = 'Email, order ID, and review text are required.';
-                    return;
-                }
-                submitting = true;
-                statusBox.textContent = 'Submitting review…';
-                try {
-                    await submitProductReview(prod.id, payload);
-                    pendingNotice.classList.remove('hidden');
-                    statusBox.textContent = 'Thanks! Your review was submitted for moderation.';
-                    notify('Review submitted for moderation', 'success', 4000);
-                    localStorage.setItem('customerEmail', payload.email);
-                    form.reset();
-                    form.querySelector('#review-rating').value = '5';
-                    hydrateReviews(true);
-                } catch (err) {
-                    statusBox.textContent = err.message || 'Submission failed';
-                    notify('Review submission failed: ' + err.message, 'error', 6000);
-                } finally {
-                    submitting = false;
-                }
-            });
-
-            form.querySelector('#refresh-reviews').addEventListener('click', async () => {
-                statusBox.textContent = 'Refreshing…';
-                await hydrateReviews(true);
-                statusBox.textContent = '';
-            });
-
-            return form;
-        }
-
-        const reviewForm = buildReviewForm();
-        panel.appendChild(reviewForm);
         rootEl.appendChild(panel);
 
         renderSummary(prod.reviewSummary);
+        renderReviews(data.reviews);
         hydrateReviews();
     }
 
@@ -222,7 +186,8 @@
             activePanel: 'products',
             discounts: [],
             lowStock: [],
-            reviews: { status: 'pending', items: [] }
+            reviews: { status: 'pending', items: [] },
+            refundThreads: new Map()
         },
         customer: (function () {
             try {
@@ -237,7 +202,8 @@
                     email: typeof data.email === 'string' ? data.email : '',
                     avatarUrl: typeof data.avatarUrl === 'string' ? data.avatarUrl : '',
                     country: typeof data.country === 'string' ? data.country : '',
-                    address: typeof data.address === 'string' ? data.address : ''
+                        address: typeof data.address === 'string' ? data.address : '',
+                        phone: typeof data.phone === 'string' ? data.phone : ''
                 };
                 if (!profile.email && !profile.name) return null;
                 return { ...profile, sessionToken: token };
@@ -252,6 +218,7 @@
         myOrdersEmail: '',
         myOrdersDetailCache: new Map(),
         myOrdersFilter: { query: '' },
+        customerRefundThreads: new Map(),
         favorites: (function () { try { const arr = JSON.parse(localStorage.getItem('favorites') || '[]'); return Array.isArray(arr) ? arr.map(String) : []; } catch { return []; } })()
     };
 
@@ -790,6 +757,7 @@
             address: user.address || '',
             sessionToken: token
         };
+        state.customerRefundThreads = new Map();
         if (state.customer.country) state.cartPage.shipCountry = state.customer.country;
         try {
             localStorage.setItem('customerSessionToken', token);
@@ -822,6 +790,7 @@
 
     function clearCustomerSession(notifyUser = false) {
         state.customer = null;
+        state.customerRefundThreads = new Map();
         try {
             localStorage.removeItem('customerSessionToken');
             localStorage.removeItem('customerProfile');
@@ -1735,6 +1704,145 @@
         }
     }
 
+    function getAdminOrders() {
+        if (Array.isArray(state.admin.orders)) return state.admin.orders;
+        if (Array.isArray(state.admin.orders?.items)) return state.admin.orders.items;
+        return [];
+    }
+
+    const REFUND_STATUS_LABELS = {
+        pending: 'Pending review',
+        in_review: 'In review',
+        approved: 'Approved',
+        refunded: 'Refunded',
+        declined: 'Declined'
+    };
+
+    function getRefundStatus(status) {
+        const key = typeof status === 'string' ? status.toLowerCase().replace(/\s+/g, '_') : '';
+        return REFUND_STATUS_LABELS[key] ? key : 'pending';
+    }
+
+    function formatRefundStatus(status) {
+        const key = getRefundStatus(status);
+        return REFUND_STATUS_LABELS[key] || 'Pending review';
+    }
+
+    function getRefundThreadStore(scope = 'admin') {
+        if (scope === 'customer') {
+            if (!state.customerRefundThreads || !(state.customerRefundThreads instanceof Map)) {
+                state.customerRefundThreads = new Map();
+            }
+            return state.customerRefundThreads;
+        }
+        if (!state.admin.refundThreads || !(state.admin.refundThreads instanceof Map)) {
+            state.admin.refundThreads = new Map();
+        }
+        return state.admin.refundThreads;
+    }
+
+    async function loadRefundMessages(orderId, { force, scope = 'admin' } = {}) {
+        const normalizedId = String(orderId || '').trim();
+        if (!normalizedId) throw new Error('Missing order id');
+        const store = getRefundThreadStore(scope);
+        const cache = store.get(normalizedId);
+        if (cache && !force && !cache.loading && !cache.error) return cache.messages;
+        store.set(normalizedId, { messages: cache?.messages || [], loading: true, error: null });
+        try {
+            const data = await apiFetch(`/api/orders/${encodeURIComponent(normalizedId)}/refund-messages`);
+            const messages = Array.isArray(data?.messages) ? data.messages : [];
+            store.set(normalizedId, { messages, loading: false, stale: false, error: null });
+            return messages;
+        } catch (err) {
+            const friendly = err?.message || 'Unable to load';
+            store.set(normalizedId, { messages: cache?.messages || [], loading: false, stale: true, error: friendly });
+            err.orderId = normalizedId;
+            throw err;
+        }
+    }
+
+    async function postRefundMessage(orderId, message, { scope = 'admin' } = {}) {
+        if (!orderId) throw new Error('Order ID required');
+        const payload = { message };
+        const data = await apiFetch(`/api/orders/${encodeURIComponent(orderId)}/refund-messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const store = getRefundThreadStore(scope);
+        const cache = store.get(orderId);
+        if (cache) {
+            cache.messages = [...cache.messages, data.message];
+            cache.loading = false;
+        } else {
+            store.set(orderId, { messages: [data.message], loading: false });
+        }
+        return data.message;
+    }
+
+    async function respondToRefund(orderId, payload) {
+        const normalizedId = String(orderId || '').trim();
+        if (!normalizedId) throw new Error('Order ID required');
+        const data = await apiFetch(`/api/orders/${encodeURIComponent(normalizedId)}/refund-response`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (data?.message) {
+            const store = getRefundThreadStore('admin');
+            const cache = store.get(normalizedId);
+            if (cache) {
+                cache.messages = [...cache.messages, data.message];
+                cache.loading = false;
+            } else {
+                store.set(normalizedId, { messages: [data.message], loading: false });
+            }
+        }
+        return data;
+    }
+
+    function describeRefundUsage(order) {
+        const requestedAt = order.returnRequestedAt ? new Date(order.returnRequestedAt) : null;
+        const deliveredAt = order.completedAt ? new Date(order.completedAt) : (order.shippedAt ? new Date(order.shippedAt) : null);
+        if (!requestedAt) return 'Awaiting customer request timestamp.';
+        if (!deliveredAt) return 'Item was not confirmed delivered before this request.';
+        const diffMs = requestedAt.getTime() - deliveredAt.getTime();
+        if (diffMs <= 0) return 'Refund requested before delivery confirmation.';
+        const days = Math.max(0, diffMs / (1000 * 60 * 60 * 24));
+        if (days < 1) return 'Refund requested within 24 hours of delivery.';
+        if (days < 7) return `Used for about ${Math.round(days)} day${Math.round(days) === 1 ? '' : 's'} before requesting a refund.`;
+        return `Used for roughly ${Math.round(days)} days before requesting a refund.`;
+    }
+
+    function renderRefundMessagesThread(orderId, { scope = 'admin', root } = {}) {
+        const attr = scope === 'customer' ? 'data-customer-refund-messages' : 'data-refund-messages';
+        const searchRoot = root || document;
+        const container = searchRoot.querySelector(`[${attr}="${CSS.escape(orderId)}"]`);
+        if (!container) return;
+        const store = getRefundThreadStore(scope);
+        const cache = store?.get(orderId);
+        const messages = cache?.messages || [];
+        container.innerHTML = '';
+        if (cache?.error) {
+            container.appendChild(el('p', { class: 'tiny alert' }, `Conversation unavailable (${cache.error}). Refresh orders and ensure the backend has the latest refund routes.`));
+            return;
+        }
+        if (!messages.length) {
+            container.appendChild(el('p', { class: 'tiny muted' }, 'No replies yet.'));
+            return;
+        }
+        messages.forEach(entry => {
+            const role = entry.authorRole || 'admin';
+            container.appendChild(el('div', { class: 'refund-message refund-message--' + role },
+                el('div', { class: 'refund-message-head' },
+                    el('span', { class: 'refund-message-author' }, entry.authorName || (role === 'admin' ? 'Store team' : 'Customer')),
+                    entry.createdAt ? el('span', { class: 'refund-message-date tiny muted' }, new Date(entry.createdAt).toLocaleString()) : null
+                ),
+                el('p', { class: 'refund-message-body' }, entry.body || '')
+            ));
+        });
+    }
+
     async function loadDiscounts() {
         if (!state.admin.token || !state.admin.user) { state.admin.discounts = []; return; }
         try {
@@ -1815,8 +1923,13 @@
             body: JSON.stringify({ email })
         });
     }
-    async function cancelOrder(id) {
-        return apiFetch(`/api/orders/${id}/cancel`, { method: 'POST' });
+    async function cancelOrder(id, reason) {
+        const options = { method: 'POST' };
+        if (reason) {
+            options.headers = { 'Content-Type': 'application/json' };
+            options.body = JSON.stringify({ reason });
+        }
+        return apiFetch(`/api/orders/${id}/cancel`, options);
     }
 
     async function createOrder(cartLines, customer, discountCode, shippingCode) {
@@ -2382,7 +2495,16 @@
 
         const controlsBar = el('div', { class: 'catalog-controls' });
         const searchForm = el('form', { class: 'catalog-search-bar', attrs: { role: 'search' } },
-            el('span', { class: 'catalog-search-icon' }, '🔍'),
+            el('span', { class: 'catalog-search-icon' },
+                el('img', {
+                    attrs: {
+                        src: 'https://img.icons8.com/ios/120/search--v1.png',
+                        width: '18',
+                        height: '18',
+                        alt: 'Search icon'
+                    }
+                })
+            ),
             el('label', { class: 'sr-only', attrs: { for: 'catalog-search-input' } }, 'Search products'),
             el('input', {
                 class: 'catalog-search-input',
@@ -2403,10 +2525,6 @@
                 el('option', { attrs: { value: 'price-asc' } }, 'Price: Low to High'),
                 el('option', { attrs: { value: 'price-desc' } }, 'Price: High to Low'),
                 el('option', { attrs: { value: 'newest' } }, 'Newest Arrivals')
-            ),
-            el('div', { class: 'catalog-view-toggle', attrs: { role: 'radiogroup', 'aria-label': 'View style' } },
-                el('button', { class: 'view-btn active', attrs: { type: 'button', 'data-view': 'grid' } }, '▦'),
-                el('button', { class: 'view-btn', attrs: { type: 'button', 'data-view': 'list', disabled: 'true' } }, '☰')
             )
         );
         controlsBar.appendChild(actionsGroup);
@@ -2538,10 +2656,11 @@
         }
 
         function productIsNew(product) {
-            const created = new Date(product.createdAt || '').getTime();
-            if (!Number.isFinite(created)) return false;
-            const THIRTY_DAYS = 1000 * 60 * 60 * 24 * 30;
-            return (Date.now() - created) <= THIRTY_DAYS;
+            const createdDate = new Date(product.createdAt || '');
+            if (!Number.isFinite(createdDate.getTime())) return false;
+            const oneMonthAgo = new Date();
+            oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+            return createdDate >= oneMonthAgo;
         }
 
         function productDiscount(product) {
@@ -2763,15 +2882,6 @@
             applyFilters();
         });
 
-        const viewButtons = Array.from(actionsGroup.querySelectorAll('.view-btn'));
-        viewButtons.forEach(btn => {
-            btn.addEventListener('click', () => {
-                if (btn.disabled) return;
-                viewButtons.forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-            });
-        });
-
         filterHeader.querySelector('.filters-clear').addEventListener('click', () => {
             filtersState.searchTerm = '';
             filtersState.categories.clear();
@@ -2856,7 +2966,7 @@
             nextBtn.addEventListener('click', () => step(1));
         }
 
-        const galleryWrap = el('div', { class: 'pd-gallery', attrs: { tabIndex: '0' } }, mainWrap, imageIndicator);
+        const galleryWrap = el('div', { class: 'pd-gallery pv-gallery-card', attrs: { tabIndex: '0' } }, mainWrap, imageIndicator);
         if (hasMultipleImages) {
             galleryWrap.addEventListener('keydown', e => {
                 if (e.key === 'ArrowRight') { selectImage((currentIdx + 1) % images.length); e.preventDefault(); }
@@ -2891,21 +3001,114 @@
             box.appendChild(el('div', { class: 'variant-info tiny muted' }, 'Select options'));
             return box;
         })();
-        const infoCol = el('div', { class: 'product-detail-info flex flex-col gap-md' },
+        variantsBox.classList.add('pv-variant-card');
+        const stockAmount = productStock(prod);
+        const stockSummary = stockAmount <= 0 ? 'Out of stock' : stockAmount < 5 ? `Only ${stockAmount} left` : `${stockAmount} ready to ship`;
+        const stockChip = inventoryBadge(prod);
+        stockChip.classList.add('pv-stock-chip');
+        const ratingView = (prod.reviewSummary && prod.reviewSummary.count > 0)
+            ? renderStarRating(prod.reviewSummary.average, prod.reviewSummary.count, { size: 'md' })
+            : el('div', { class: 'tiny muted' }, 'No reviews yet');
+
+        const tagRow = prod.tags && prod.tags.length
+            ? el('div', { class: 'pv-tag-row' }, ...prod.tags.slice(0, 6).map(t => el('span', { class: 'pv-tag' }, t)))
+            : null;
+
+        const qtyInput = el('input', { attrs: { id: 'prod-qty', type: 'number', min: '1', value: '1' } });
+        const qtyField = el('div', { class: 'pv-qty-field' },
+            el('span', { class: 'pv-qty-label tiny muted' }, 'Qty'),
+            qtyInput
+        );
+        const addBtn = el('button', { class: 'btn btn-success', attrs: { id: 'add-cart-btn', type: 'button' } }, 'Add to Cart');
+        const backBtn = el('button', { class: 'btn btn-outline', attrs: { 'data-route': 'catalog', type: 'button' } }, 'Back');
+        const ctaRow = el('div', { class: 'pv-cta-row' }, qtyField, el('div', { class: 'pv-cta-buttons' }, addBtn, backBtn));
+
+        const assuranceItem = (title, copy) => el('div', { class: 'pv-assurance-item' },
+            el('span', { class: 'pv-assurance-title' }, title),
+            el('span', { class: 'tiny muted' }, copy)
+        );
+        const assuranceRow = el('div', { class: 'pv-assurance-row' },
+            assuranceItem('Ships fast', 'Dispatches within 24 hours'),
+            assuranceItem('Easy returns', 'Free exchanges within 30 days'),
+            assuranceItem('Secure checkout', '256-bit SSL protection')
+        );
+
+        const derivedFeatures = (prod.tags && prod.tags.length
+            ? prod.tags.slice(0, 4).map(tag => `- ${tag.replace(/[-_]/g, ' ')}`)
+            : ['- Soft-touch premium fabric', '- Everyday relaxed fit', '- Breathable comfort', '- Easy to pair with staples']);
+        const buildFeatureList = () => el('div', { class: 'pv-feature-list' }, ...derivedFeatures.map(text => el('span', {}, text.replace(/^-\s*/, ''))));
+
+        const priceRow = el('div', { class: 'pv-price-row' },
+            el('span', { class: 'pv-price', attrs: { 'data-price-cents': prod.priceCents } }, money(prod.priceCents)),
+            stockChip,
+            el('span', { class: 'pv-meta-chip' }, 'Ships in 24h')
+        );
+
+        const infoNodes = [
+            el('span', { class: 'pv-status-pill tiny muted' }, 'Featured drop'),
             el('h1', { class: 'product-detail-title' }, prod.title),
-            el('div', { class: 'flex gap-sm align-center' }, el('span', { class: 'price big-price', attrs: { 'data-price-cents': prod.priceCents } }, money(prod.priceCents)), inventoryBadge(prod)),
-            (prod.reviewSummary && prod.reviewSummary.count > 0 ? renderStarRating(prod.reviewSummary.average, prod.reviewSummary.count, { size: 'md' }) : el('div', { class: 'tiny muted' }, 'No reviews yet')),
-            prod.tags && prod.tags.length ? el('div', { class: 'tag-list' }, ...prod.tags.map(t => el('span', { class: 'tag' }, t))) : null,
-            el('p', { class: 'product-detail-desc' }, prod.description || 'No description.'),
+            ratingView,
+            priceRow,
+            tagRow,
+            el('p', { class: 'pv-description' }, prod.description || 'No description available.'),
             variantsBox,
-            el('label', { class: 'inline-fields' }, 'Qty', el('input', { attrs: { id: 'prod-qty', type: 'number', min: '1', value: '1', style: 'width:70px' } })),
-            el('div', { class: 'flex gap-sm' },
-                el('button', { class: 'btn btn-success', attrs: { id: 'add-cart-btn', type: 'button' } }, 'Add to Cart'),
-                el('button', { class: 'btn btn-outline', attrs: { 'data-route': 'catalog', type: 'button' } }, 'Back')
+            ctaRow,
+            assuranceRow
+        ].filter(Boolean);
+
+        const infoCol = el('div', { class: 'pv-info-card pv-summary-card flex flex-col gap-md' }, ...infoNodes);
+
+        const hero = el('section', { class: 'pv-stage' },
+            el('div', { class: 'pv-hero' },
+                el('div', { class: 'pv-media-card' }, galleryWrap),
+                infoCol
             )
         );
-        const layout = el('section', { class: 'product-detail enhanced' }, galleryWrap, infoCol);
-        rootEl.appendChild(layout);
+
+        const reviewCount = prod.reviewSummary?.count || 0;
+        const deliveryWindowLabel = '2-4 days';
+        const deliveryWindowDetail = 'Priority handling';
+        const insightCard = (label, value, detail) => el('div', { class: 'pv-insight-card' },
+            el('span', { class: 'pv-insight-label' }, label),
+            el('span', { class: 'pv-insight-value' }, value),
+            detail ? el('span', { class: 'pv-insight-detail tiny muted' }, detail) : null
+        );
+        const insightGrid = el('section', { class: 'pv-insight-grid' },
+            insightCard('Inventory', stockSummary, 'Live studio count'),
+            insightCard('Arrives', deliveryWindowLabel, deliveryWindowDetail),
+            insightCard('Reviews', reviewCount ? `${reviewCount} verified` : 'Be the first', reviewCount ? 'Loved by the community' : 'Collect the first story'),
+            insightCard('Care', 'Easy upkeep', 'Machine wash cold')
+        );
+
+        const careSteps = [
+            'Wash cold, gentle cycle',
+            'Lay flat or tumble dry low',
+            'Do not bleach',
+            'Warm iron inside out if needed'
+        ];
+        const careList = el('ul', { class: 'pv-panel-list' }, ...careSteps.map(step => el('li', {}, step)));
+        const styleTags = (prod.tags || []).slice(0, 4);
+        const styleTagRow = styleTags.length ? el('div', { class: 'pv-tag-row' }, ...styleTags.map(t => el('span', { class: 'pv-tag' }, t))) : null;
+        const reviewButton = el('button', { class: 'btn btn-small btn-outline', attrs: { 'data-route': 'product-reviews', 'data-id': prod.id } }, reviewCount ? 'Read reviews' : 'Start a review');
+
+        const panel = (title, nodes) => el('article', { class: 'pv-panel' },
+            el('h3', { class: 'pv-panel-title' }, title),
+            ...nodes
+        );
+        const detailGrid = el('section', { class: 'pv-panel-grid' },
+            panel('Fabric & Feel', [
+                el('p', {}, 'Premium mid-weight cotton meant for all-day comfort.'),
+                buildFeatureList()
+            ]),
+            panel('Care & Fit', [careList, styleTagRow].filter(Boolean)),
+            panel('Story & Support', [
+                el('p', {}, prod.description || 'Crafted in small batches to reduce waste and dyed with low-water techniques.'),
+                el('div', { class: 'pv-panel-actions' }, reviewButton),
+                el('span', { class: 'tiny muted' }, 'Need styling help? support@loomwear.shop')
+            ])
+        );
+
+        const viewSections = [hero, insightGrid, detailGrid];
         // Related items
         const related = [];
         const seenProducts = new Set([prod.id]);
@@ -2920,12 +3123,30 @@
             }
         }
         if (related.length) {
-            const relWrap = el('div', { class: 'related mt-lg' }, el('h3', { class: 'h5' }, 'Related Items'),
-                el('div', { class: 'related-grid' }, ...related.map(r => el('div', { class: 'related-card', attrs: { 'data-rel-id': r.id } },
-                    el('img', { attrs: { src: (Array.isArray(r.images) && r.images.length ? r.images[0] : productPlaceholder(360)), alt: r.title, loading: 'lazy' } }),
-                    el('div', { class: 'rc-body' }, el('div', { class: 'rc-title tiny' }, r.title), el('div', { class: 'rc-price tiny', attrs: { 'data-price-cents': r.priceCents } }, money(r.priceCents)))
-                ))));
-            rootEl.appendChild(relWrap);
+            const relGrid = el('div', { class: 'pv-related-grid' }, ...related.map(r => el('article', { class: 'pv-related-card', attrs: { 'data-rel-id': r.id } },
+                el('div', { class: 'pv-related-media' },
+                    el('img', { attrs: { src: (Array.isArray(r.images) && r.images.length ? r.images[0] : productPlaceholder(420)), alt: r.title || 'Related product', loading: 'lazy' } })
+                ),
+                el('div', { class: 'pv-related-body' },
+                    el('span', { class: 'pv-related-chip tiny muted' }, 'Pairs well'),
+                    el('p', { class: 'pv-related-name' }, r.title || 'Product'),
+                    el('div', { class: 'pv-related-row flex align-center justify-between' },
+                        el('span', { class: 'pv-related-price', attrs: { 'data-price-cents': r.priceCents } }, money(r.priceCents)),
+                        el('span', { class: 'pv-related-link tiny' }, 'View')
+                    )
+                )
+            )));
+            const relWrap = el('section', { class: 'pv-related mt-lg' },
+                el('div', { class: 'pv-related-head' },
+                    el('div', {},
+                        el('span', { class: 'pv-eyebrow tiny muted' }, 'Styled for you'),
+                        el('h3', { class: 'pv-related-title' }, 'Related Items')
+                    ),
+                    el('button', { class: 'btn btn-small btn-outline', attrs: { 'data-route': 'catalog', type: 'button' } }, 'Shop catalog')
+                ),
+                relGrid
+            );
+            viewSections.push(relWrap);
             relWrap.addEventListener('click', e => { const c = e.target.closest('[data-rel-id]'); if (c) showProductDetail(c.getAttribute('data-rel-id')); });
         }
         // Recently viewed
@@ -2935,44 +3156,97 @@
         localStorage.setItem(RV_KEY, JSON.stringify(rv));
         const recents = rv.filter(pid => pid !== prod.id).map(pid => state.productsById.get(pid)).filter(Boolean).slice(0, 6);
         if (recents.length) {
-            const rvWrap = el('div', { class: 'recently-viewed mt-lg' }, el('h3', { class: 'h5' }, 'Recently Viewed'),
-                el('div', { class: 'rv-grid' }, ...recents.map(r => el('div', { class: 'rv-item', attrs: { 'data-rv-id': r.id } },
+            const rvGrid = el('div', { class: 'pv-recent-grid' }, ...recents.map(r => el('div', { class: 'pv-recent-card', attrs: { 'data-rv-id': r.id } },
+                el('div', { class: 'pv-recent-media' },
                     el('img', { attrs: { src: (r.images && r.images[0]) || productPlaceholder(320), alt: r.title, loading: 'lazy' } })
-                ))));
-            rootEl.appendChild(rvWrap);
+                ),
+                el('div', { class: 'pv-recent-body' },
+                    el('span', { class: 'pv-recent-chip tiny muted' }, 'Viewed'),
+                    el('p', { class: 'pv-recent-name' }, r.title || 'Product'),
+                    el('span', { class: 'pv-recent-price tiny', attrs: { 'data-price-cents': r.priceCents } }, money(r.priceCents))
+                )
+            )));
+            const rvWrap = el('section', { class: 'pv-recently-viewed mt-lg' },
+                el('div', { class: 'pv-recent-head' },
+                    el('div', {},
+                        el('span', { class: 'pv-eyebrow tiny muted' }, 'Keep browsing'),
+                        el('h3', { class: 'pv-recent-title' }, 'Recently Viewed')
+                    ),
+                    el('button', { class: 'btn btn-small btn-outline', attrs: { 'data-route': 'catalog', type: 'button' } }, 'All products')
+                ),
+                rvGrid
+            );
+            viewSections.push(rvWrap);
             rvWrap.addEventListener('click', e => { const c = e.target.closest('[data-rv-id]'); if (c) showProductDetail(c.getAttribute('data-rv-id')); });
         }
-
+        const reviewSummary = prod.reviewSummary || { count: 0, average: null, totalQuantity: 0 };
+        const previewReviewCount = reviewSummary.count || 0;
         const summarySnippet = (() => {
-            const safe = prod.reviewSummary || { count: 0, average: null, totalQuantity: 0 };
-            const count = safe.count || 0;
-            const wrap = el('div', { class: 'review-summary-preview flex flex-col gap-xs' });
+            const safe = reviewSummary;
+            const count = previewReviewCount;
+            const wrap = el('div', { class: 'review-summary-preview flex flex-col gap-sm' });
             wrap.appendChild(el('div', { class: 'review-summary-main flex gap-sm align-center' },
-                renderStarRating(safe.average ?? null, count || null, { size: 'md' }),
+                renderStarRating(safe.average ?? null, count || null, { size: 'lg' }),
                 el('div', { class: 'flex flex-col' },
                     el('span', { class: 'summary-average' }, count ? `${(safe.average ?? 0).toFixed(1)} / 5` : 'No ratings yet'),
                     el('span', { class: 'summary-count tiny muted' }, count ? `${count} review${count === 1 ? '' : 's'}` : 'Be the first to review')
                 )
             ));
-            if (count) {
-                wrap.appendChild(el('div', { class: 'summary-total tiny muted' }, `Verified units purchased: ${safe.totalQuantity || 0}`));
-            }
+            wrap.appendChild(el('div', { class: 'summary-total tiny muted' }, count
+                ? `Verified units purchased: ${safe.totalQuantity || 0}`
+                : 'Awaiting the first verified take.'));
             return wrap;
         })();
+        summarySnippet.classList.add('prp-score-card');
 
-        const teaserCopy = (prod.reviewSummary?.count || 0)
-            ? 'Read what other buyers are saying or share your experience.'
-            : 'Be the first to review this product.';
+        const teaserCopy = previewReviewCount
+            ? 'See how the drop wears, fits, and ages from verified buyers.'
+            : 'Be the first to leave a fit check for the community.';
+
+        const statCard = (label, value, detail) => el('div', { class: 'prp-stat-card' },
+            el('span', { class: 'prp-stat-label tiny muted' }, label),
+            el('span', { class: 'prp-stat-value' }, value),
+            detail ? el('span', { class: 'prp-stat-detail tiny muted' }, detail) : null
+        );
+        const sentimentLabel = (() => {
+            if (!reviewCount) return 'New drop';
+            const avg = reviewSummary.average ?? 0;
+            if (avg >= 4.6) return 'Glowing';
+            if (avg >= 4) return 'Warm';
+            if (avg >= 3.4) return 'Balanced';
+            return 'Mixed';
+        })();
+        const reviewStats = el('div', { class: 'prp-stats-grid' },
+            statCard('Verified stories', previewReviewCount ? `${previewReviewCount}` : 'Soon', previewReviewCount ? 'Published reviews' : 'Collecting impressions'),
+            statCard('Units loved', reviewSummary.totalQuantity ? `${reviewSummary.totalQuantity}` : '—', 'Orders tied to reviews'),
+            statCard('Sentiment', sentimentLabel, previewReviewCount ? 'Community mood' : 'Awaiting first notes')
+        );
 
         const reviewTeaser = el('section', { class: 'panel product-reviews-preview mt-lg' },
-            el('div', { class: 'panel-header flex align-center justify-between gap-sm flex-wrap' },
-                el('span', {}, 'Product Reviews'),
-                el('button', { class: 'btn btn-small btn-outline', attrs: { 'data-route': 'product-reviews', 'data-id': prod.id } }, 'View Reviews')
+            el('div', { class: 'prp-head flex flex-col gap-xxs' },
+                el('span', { class: 'pv-eyebrow tiny muted' }, 'Community voices'),
+                el('h3', { class: 'prp-title' }, 'Reviews & stories')
             ),
-            summarySnippet,
-            el('p', { class: 'tiny muted mt-sm' }, teaserCopy)
+            el('div', { class: 'prp-body' },
+                el('div', { class: 'prp-left flex flex-col gap-sm' },
+                    summarySnippet,
+                    el('p', { class: 'prp-copy tiny muted' }, teaserCopy)
+                ),
+                el('div', { class: 'prp-right flex flex-col gap-md' },
+                    reviewStats,
+                    el('div', { class: 'prp-cta-card flex flex-col gap-sm' },
+                        el('p', { class: 'prp-cta-text' }, previewReviewCount
+                            ? 'Dive deeper into detailed fit notes, fabric impressions, and styling inspo.'
+                            : 'Set the tone for this drop with the first review.'),
+                        el('button', { class: 'btn btn-small btn-outline', attrs: { 'data-route': 'product-reviews', 'data-id': prod.id } }, previewReviewCount ? 'Read full reviews' : 'Open review hub')
+                    )
+                )
+            )
         );
-        rootEl.appendChild(reviewTeaser);
+
+        viewSections.push(reviewTeaser);
+        const shell = el('div', { class: 'product-view-shell container' }, ...viewSections);
+        rootEl.appendChild(shell);
 
         document.getElementById('add-cart-btn').addEventListener('click', () => {
             const qty = Math.max(1, parseInt(document.getElementById('prod-qty').value, 10) || 1);
@@ -2990,109 +3264,147 @@
 
     function renderCart() {
         rootEl.innerHTML = '';
-        const panel = el('section', { class: 'panel' },
-            el('div', { class: 'panel-header' },
-                el('span', {}, 'Your Cart'),
+        const panel = el('section', { class: 'cart-page container' });
+        const uniqueLines = state.cart.length;
+        const totalItems = state.cart.reduce((sum, line) => sum + line.quantity, 0);
+        const hero = el('div', { class: 'cart-hero' },
+            el('div', { class: 'cart-hero-copy' },
+                el('p', { class: 'cart-eyebrow' }, 'Shopping Cart'),
+                el('h1', {}, uniqueLines ? 'Review & checkout' : 'Your cart is empty'),
+                el('p', { class: 'muted' }, uniqueLines
+                    ? `You have ${totalItems} item${totalItems === 1 ? '' : 's'} ready for checkout.`
+                    : 'Add some favorites to your bag and we will keep them safe for you.')
+            ),
+            el('div', { class: 'cart-hero-actions' },
                 el('button', {
-                    class: 'btn btn-small btn-outline',
+                    class: 'btn btn-outline',
                     attrs: { 'data-route': 'catalog' }
-                }, 'Back to Catalog')
+                }, uniqueLines ? 'Continue shopping' : 'Browse catalog')
             )
         );
+        panel.appendChild(hero);
 
-        if (state.cart.length === 0) {
-            panel.appendChild(el('p', { class: 'muted' }, 'Your cart is empty.'));
+        if (!uniqueLines) {
+            panel.appendChild(el('div', { class: 'cart-empty-card' },
+                el('p', { class: 'muted' }, 'When you add products, detailed delivery estimates and a friendly summary will appear here.')
+            ));
             rootEl.appendChild(panel);
             return;
         }
 
-        const tableWrap = el('div', { class: 'cart-table-wrapper' });
-        const table = el('table', { class: 'cart' });
-        table.innerHTML = `
-      <thead>
-        <tr>
-          <th>Product</th>
-          <th>Unit</th>
-          <th>Qty</th>
-          <th>Line Total</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-      <tfoot></tfoot>
-    `;
-        const tbody = table.querySelector('tbody');
-        let subtotal = 0;
+        const insights = el('div', { class: 'cart-insights' },
+            el('div', { class: 'cart-insight' },
+                el('span', { class: 'label' }, 'Items in bag'),
+                el('strong', {}, totalItems)
+            ),
+            el('div', { class: 'cart-insight' },
+                el('span', { class: 'label' }, 'Unique styles'),
+                el('strong', {}, uniqueLines)
+            ),
+            el('div', { class: 'cart-insight' },
+                el('span', { class: 'label' }, 'Cart value'),
+                el('strong', {}, money(cartSubtotalCents()))
+            )
+        );
+        panel.appendChild(insights);
+
+        const layout = el('div', { class: 'cart-layout' });
+        const itemsCard = el('div', { class: 'cart-items-card' });
+        itemsCard.appendChild(el('div', { class: 'cart-items-heading' },
+            el('div', {},
+                el('p', { class: 'eyebrow' }, 'Items in your bag'),
+                el('h2', {}, `${uniqueLines} style${uniqueLines === 1 ? '' : 's'}`)
+            ),
+            el('span', { class: 'cart-items-note' }, 'Adjust quantities or remove items below')
+        ));
+        const itemsList = el('div', { class: 'cart-items-list' });
+
         for (const line of state.cart) {
             const prod = state.productsById.get(line.productId);
             if (!prod) continue;
-            const lt = prod.priceCents * line.quantity;
-            subtotal += lt;
-            const variantLabel = (line.variantId && prod.variants) ? (() => { const v = prod.variants.find(v => v.id === line.variantId); if (!v) return ''; const lab = Object.values(v.optionValues || {}).join(' / ') || v.sku || v.id.slice(0, 6); return ' (' + lab + ')'; })() : '';
             const lineKey = line.productId + '::' + (line.variantId || '');
-            const tr = el('tr', { attrs: { 'data-line-key': lineKey } },
-                el('td', {}, prod.title + variantLabel),
-                el('td', {}, money(prod.priceCents)),
-                el('td', {},
-                    el('input', {
-                        class: 'qty-input',
-                        attrs: {
-                            type: 'number',
-                            value: String(line.quantity),
-                            min: '1',
-                            'data-qty-key': lineKey
-                        }
-                    })
+            const lt = prod.priceCents * line.quantity;
+            const variantLabel = (line.variantId && prod.variants) ? (() => {
+                const v = prod.variants.find(v => v.id === line.variantId);
+                if (!v) return '';
+                return Object.values(v.optionValues || {}).join(' / ') || v.sku || v.id.slice(0, 6);
+            })() : '';
+            const imageSrc = (Array.isArray(prod.images) && prod.images[0]) || productPlaceholder(480);
+            const stock = productStock(prod);
+            const stockLabel = stock <= 0 ? 'Out of stock' : stock <= 3 ? `Only ${stock} left` : 'In stock';
+            const stockClass = stock <= 0 ? 'out' : stock <= 3 ? 'low' : 'ok';
+
+            const qtyControl = el('div', { class: 'cart-qty-control' },
+                el('button', {
+                    class: 'cart-qty-btn',
+                    attrs: { type: 'button', 'data-qty-delta': '-1', 'data-qty-key': lineKey, 'aria-label': 'Decrease quantity' }
+                }, '−'),
+                el('input', {
+                    class: 'qty-input',
+                    attrs: {
+                        type: 'number',
+                        min: '1',
+                        value: String(line.quantity),
+                        'data-qty-key': lineKey
+                    }
+                }),
+                el('button', {
+                    class: 'cart-qty-btn',
+                    attrs: { type: 'button', 'data-qty-delta': '1', 'data-qty-key': lineKey, 'aria-label': 'Increase quantity' }
+                }, '+')
+            );
+
+            const lineCard = el('article', { class: 'cart-line-card', attrs: { 'data-line-key': lineKey } },
+                el('div', { class: 'cart-line-media' },
+                    el('img', { attrs: { src: imageSrc, alt: prod.title, loading: 'lazy' } })
                 ),
-                el('td', {}, money(lt)),
-                el('td', {},
-                    el('button', {
-                        class: 'btn btn-small btn-danger',
-                        attrs: { 'data-remove-key': lineKey }
-                    }, 'Remove')
+                el('div', { class: 'cart-line-info' },
+                    el('div', { class: 'cart-line-head' },
+                        el('div', { class: 'cart-line-title-wrap' },
+                            el('h3', { class: 'cart-line-title' }, prod.title),
+                            variantLabel ? el('span', { class: 'cart-line-variant' }, variantLabel) : null
+                        ),
+                        el('span', { class: 'cart-line-price' }, money(lt))
+                    ),
+                    el('div', { class: 'cart-line-meta' },
+                        el('span', { class: 'cart-chip' }, 'Unit ' + money(prod.priceCents)),
+                        el('span', { class: 'cart-chip inventory ' + stockClass }, stockLabel)
+                    ),
+                    el('div', { class: 'cart-line-controls' },
+                        qtyControl,
+                        el('div', { class: 'cart-line-actions' },
+                            el('button', {
+                                class: 'cart-remove-btn',
+                                attrs: { type: 'button', 'data-remove-key': lineKey }
+                            }, 'Remove'),
+                            el('span', { class: 'cart-line-subtotal' }, `${line.quantity} x ${money(prod.priceCents)} each`)
+                        )
+                    )
                 )
             );
-            tbody.appendChild(tr);
+            itemsList.appendChild(lineCard);
         }
+        itemsCard.appendChild(itemsList);
 
-        const tfoot = table.querySelector('tfoot');
-        const tax = Math.round(subtotal * 0.075);
-        const total = subtotal + tax;
-
-        tfoot.appendChild(el('tr', {},
-            el('td', { attrs: { colspan: '3' } }, 'Subtotal'),
-            el('td', {}, money(subtotal)),
-            el('td')
+        const summaryCard = el('aside', { class: 'cart-summary-card' });
+        summaryCard.appendChild(el('div', { class: 'cart-summary-header' },
+            el('p', { class: 'eyebrow' }, 'Order summary'),
+            el('p', { class: 'muted tiny' }, 'All duties calculated at checkout')
         ));
-        tfoot.appendChild(el('tr', {},
-            el('td', { attrs: { colspan: '3' } }, 'Tax (7.5%)'),
-            el('td', {}, money(tax)),
-            el('td')
-        ));
-        tfoot.appendChild(el('tr', {},
-            el('td', { attrs: { colspan: '3' }, class: 'bold' }, 'Total'),
-            el('td', { class: 'bold' }, money(total)),
-            el('td')
-        ));
-
-        tableWrap.appendChild(table);
-        panel.appendChild(tableWrap);
 
         /* --- Discount & Shipping Estimator Section --- */
-        const estBox = el('div', { class: 'cart-estimator mt-lg' });
-        const summaryBox = el('div', { class: 'cart-summary-box' });
         const discountField = (function () {
-            const wrap = el('div', { class: 'cart-discount-field' });
-            wrap.appendChild(el('label', { attrs: { for: 'cart-discount-code' } }, 'Discount Code'));
-            const input = el('input', { attrs: { id: 'cart-discount-code', type: 'text', value: state.cartPage.discountCode || '' } });
+            const wrap = el('div', { class: 'cart-form-field' });
+            wrap.appendChild(el('label', { attrs: { for: 'cart-discount-code' } }, 'Discount code'));
+            const input = el('input', { attrs: { id: 'cart-discount-code', type: 'text', value: state.cartPage.discountCode || '', placeholder: 'Enter code' } });
             const btn = el('button', { class: 'btn btn-small', attrs: { id: 'cart-discount-apply', type: 'button' } }, state.cartPage.discountApplied ? 'Applied' : 'Apply');
             if (state.cartPage.discountApplied) btn.classList.add('applied');
-            wrap.appendChild(el('div', { class: 'cart-discount-row' }, input, btn));
+            wrap.appendChild(el('div', { class: 'cart-form-control' }, input, btn));
             return wrap;
         })();
         const shipField = (function () {
-            const wrap = el('div', { class: 'cart-ship-field' });
-            wrap.appendChild(el('label', { attrs: { for: 'cart-ship-country' } }, 'Ship To'));
+            const wrap = el('div', { class: 'cart-form-field' });
+            wrap.appendChild(el('label', { attrs: { for: 'cart-ship-country' } }, 'Ship to'));
             const sel = el('select', { attrs: { id: 'cart-ship-country' } },
                 el('option', { attrs: { value: 'PH' } }, 'Philippines'),
                 el('option', { attrs: { value: 'US' } }, 'United States'),
@@ -3106,7 +3418,7 @@
                 el('option', { attrs: { value: 'OTHER' } }, 'Other / International')
             );
             sel.value = state.cartPage.shipCountry || 'PH';
-            wrap.appendChild(sel);
+            wrap.appendChild(el('div', { class: 'cart-form-control' }, sel));
             return wrap;
         })();
         const progressWrap = el('div', { class: 'free-ship-progress hidden' },
@@ -3114,16 +3426,19 @@
             el('div', { class: 'fs-label' })
         );
         const totalsBox = el('div', { class: 'cart-totals' });
-        summaryBox.appendChild(discountField);
-        summaryBox.appendChild(shipField);
-        summaryBox.appendChild(progressWrap);
-        summaryBox.appendChild(totalsBox);
-        estBox.appendChild(summaryBox);
-        panel.appendChild(estBox);
 
-        const checkoutBtn = el('button', { class: 'btn mt-md', attrs: { id: 'checkout-btn' } }, 'Checkout');
-        panel.appendChild(checkoutBtn);
+        summaryCard.appendChild(discountField);
+        summaryCard.appendChild(shipField);
+        summaryCard.appendChild(progressWrap);
+        summaryCard.appendChild(totalsBox);
 
+        const checkoutBtn = el('button', { class: 'btn btn-primary cart-checkout-btn', attrs: { id: 'checkout-btn' } }, 'Checkout');
+        summaryCard.appendChild(checkoutBtn);
+        summaryCard.appendChild(el('p', { class: 'cart-secure-note' }, 'Secure payments • Free returns within 30 days'));
+
+        layout.appendChild(itemsCard);
+        layout.appendChild(summaryCard);
+        panel.appendChild(layout);
         rootEl.appendChild(panel);
 
         const discountInput = discountField.querySelector('input');
@@ -3221,7 +3536,7 @@
         }
 
         panel.addEventListener('change', e => {
-            const inp = e.target.closest('[data-qty-key]');
+            const inp = e.target.closest('input[data-qty-key]');
             if (inp) {
                 const key = inp.getAttribute('data-qty-key');
                 const [pid, variantIdRaw] = key.split('::');
@@ -3241,6 +3556,26 @@
         });
 
         panel.addEventListener('click', e => {
+            const deltaBtn = e.target.closest('[data-qty-delta]');
+            if (deltaBtn) {
+                const key = deltaBtn.getAttribute('data-qty-key');
+                const [pid, variantIdRaw] = key.split('::');
+                const variantId = variantIdRaw || null;
+                const delta = parseInt(deltaBtn.getAttribute('data-qty-delta'), 10) || 0;
+                const line = state.cart.find(l => String(l.productId) === pid && String(l.variantId || '') === (variantId || ''));
+                let qty = (line ? line.quantity : 1) + delta;
+                if (qty < 1) qty = 1;
+                const prod = state.productsById.get(pid);
+                let max = prod ? productStock(prod) : 0;
+                if (variantId && prod && prod.variants) {
+                    const v = prod.variants.find(v => v.id === variantId);
+                    if (v && typeof v.inventory === 'number') max = v.inventory;
+                }
+                if (qty > max) { qty = max; notify('Limited to stock (' + max + ')', 'warn'); }
+                setCartQuantity(pid, qty, variantId);
+                renderCart();
+                return;
+            }
             const btnRemove = e.target.closest('[data-remove-key]');
             if (btnRemove) {
                 const key = btnRemove.getAttribute('data-remove-key');
@@ -3462,6 +3797,8 @@
             }, 400);
 
             function injectFallback(container, closeFn) {
+                const fallbackEtaLabel = '2-4 days';
+                const fallbackEtaDetail = 'Priority handling';
                 container.innerHTML = '';
                 container.appendChild(el('button', { class: 'modal-close', attrs: { type: 'button' } }, '×'));
                 container.appendChild(el('h2', {}, 'Checkout (Fallback)'));
@@ -3470,6 +3807,7 @@
                 const fb = el('form', { class: 'flex flex-col gap-sm', attrs: { id: 'checkout-fallback-form' } },
                     el('input', { attrs: { id: 'fb-name', placeholder: 'Name', required: 'true' } }),
                     el('input', { attrs: { id: 'fb-email', placeholder: 'Email', required: 'true', type: 'email' } }),
+                    el('input', { attrs: { id: 'fb-phone', placeholder: 'Phone number', required: 'true', type: 'tel' } }),
                     el('textarea', { attrs: { id: 'fb-address', placeholder: 'Address', required: 'true', style: 'min-height:60px;' } }),
                     el('select', { attrs: { id: 'fb-country' } }, el('option', { attrs: { value: 'US' } }, 'United States'), el('option', { attrs: { value: 'CA' } }, 'Canada'), el('option', { attrs: { value: 'DE' } }, 'Germany'), el('option', { attrs: { value: 'OTHER' } }, 'Other')),
                     el('div', {}, el('button', { class: 'btn btn-success', attrs: { type: 'submit' } }, 'Place Order'), ' ', el('button', { class: 'btn btn-outline', attrs: { type: 'button', id: 'fb-cancel' } }, 'Cancel'))
@@ -3478,10 +3816,12 @@
                 if (state.customer) {
                     const nameInput = fb.querySelector('#fb-name');
                     const emailInput = fb.querySelector('#fb-email');
+                    const phoneInput = fb.querySelector('#fb-phone');
                     const addressInput = fb.querySelector('#fb-address');
                     const countrySelect = fb.querySelector('#fb-country');
                     if (nameInput && state.customer.name) nameInput.value = state.customer.name;
                     if (emailInput && state.customer.email) emailInput.value = state.customer.email;
+                    if (phoneInput && state.customer.phone) phoneInput.value = state.customer.phone;
                     if (addressInput && state.customer.address) addressInput.value = state.customer.address;
                     if (countrySelect && state.customer.country) {
                         const desired = Array.from(countrySelect.options || []).some(opt => opt.value === state.customer.country)
@@ -3494,13 +3834,30 @@
                 fb.querySelector('#fb-cancel').addEventListener('click', closeFn);
                 fb.addEventListener('submit', async ev => {
                     ev.preventDefault();
-                    const customer = { name: document.getElementById('fb-name').value.trim(), email: document.getElementById('fb-email').value.trim(), address: document.getElementById('fb-address').value.trim(), country: document.getElementById('fb-country').value };
-                    if (!customer.name || !customer.email || !customer.address) { notify('Fill all fields', 'warn'); return; }
+                    const customer = {
+                        name: document.getElementById('fb-name').value.trim(),
+                        email: document.getElementById('fb-email').value.trim(),
+                        phone: document.getElementById('fb-phone').value.trim(),
+                        address: document.getElementById('fb-address').value.trim(),
+                        country: document.getElementById('fb-country').value
+                    };
+                    if (!customer.name || !customer.email || !customer.phone || !customer.address) { notify('Fill all fields', 'warn'); return; }
                     try {
                         showSpinner(true);
                         const payloadLines = cartLines.map(line => ({ productId: line.productId, quantity: line.quantity, variantId: line.variantId }));
                         const orderRes = await createOrder(payloadLines, customer);
-                        state.cart = []; saveCart(); closeFn(); state.lastOrder = { id: orderRes.id, subtotalCents: orderRes.subtotalCents, discountCents: orderRes.discountCents, shippingCents: orderRes.shippingCents, shippingDiscountCents: orderRes.shippingDiscountCents, totalCents: orderRes.totalCents, lines: cartLines, customer }; navigate('order-confirmation');
+                        state.cart = []; saveCart(); closeFn(); state.lastOrder = {
+                            id: orderRes.id,
+                            subtotalCents: orderRes.subtotalCents,
+                            discountCents: orderRes.discountCents,
+                            shippingCents: orderRes.shippingCents,
+                            shippingDiscountCents: orderRes.shippingDiscountCents,
+                            totalCents: orderRes.totalCents,
+                            lines: cartLines,
+                            customer,
+                            etaLabel: fallbackEtaLabel,
+                            etaDetail: fallbackEtaDetail
+                        }; navigate('order-confirmation');
                     } catch (err) { notify('Fallback order failed: ' + err.message, 'error', 6000); }
                     finally { showSpinner(false); }
                 });
@@ -3508,10 +3865,27 @@
 
             // Main rich form build wrapped in try so fallback can still appear if it breaks
             try {
-                const summary = el('div', { class: 'mb-md' });
+                const linePriceRefs = [];
+                const lineup = el('div', { class: 'checkout-lineup' });
                 for (const line of cartLines) {
-                    const displayTitle = line.title + (line.variantLabel ? ' (' + line.variantLabel + ')' : '');
-                    summary.appendChild(el('div', { class: 'flex gap-sm' }, el('span', { class: 'bold' }, line.quantity + '×'), el('span', {}, displayTitle), el('span', { class: 'muted' }, money(line.unitPriceCents * line.quantity))));
+                    const product = state.productsById.get(line.productId);
+                    const imageSrc = (Array.isArray(product?.images) && product.images[0]) || productPlaceholder(360);
+                    const priceNode = el('span', { class: 'checkout-line-price' }, money(line.unitPriceCents * line.quantity));
+                    linePriceRefs.push({ node: priceNode, line });
+                    lineup.appendChild(el('div', { class: 'checkout-line' },
+                        el('div', { class: 'checkout-line-thumb' },
+                            el('img', { attrs: { src: imageSrc, alt: line.title, loading: 'lazy' } })
+                        ),
+                        el('div', { class: 'checkout-line-info' },
+                            el('div', { class: 'checkout-line-title-wrap' },
+                                el('span', { class: 'checkout-line-qty-pill' }, line.quantity + '×'),
+                                el('p', { class: 'checkout-line-title' }, line.title)
+                            ),
+                            line.variantLabel ? el('span', { class: 'checkout-line-variant' }, line.variantLabel) : null,
+                            el('span', { class: 'checkout-line-unit' }, 'Unit ' + money(line.unitPriceCents))
+                        ),
+                        el('div', { class: 'checkout-line-price-wrap' }, priceNode)
+                    ));
                 }
                 const estSubtotal = cartSubtotalCents();
                 const estTax = Math.round(estSubtotal * 0.075);
@@ -3535,43 +3909,184 @@
                     if (['PH', 'PHL', 'PHILIPPINES'].includes(up)) return 0; // No per-item fees in PH flat model
                     let t = 0; for (const line of state.cart) { const p = state.productsById.get(line.productId); if (!p) continue; t += (p.shippingFeeCents || 0) * line.quantity; } return t;
                 }
-                const breakdownBox = el('div', { class: 'mt-md', attrs: { id: 'checkout-breakdown' } });
-                function renderBreakdown() {
-                    breakdownBox.innerHTML = '';
-                    breakdownBox.appendChild(el('div', {}, 'Subtotal: ' + money(estSubtotal)));
-                    if (estDiscount > 0) breakdownBox.appendChild(el('div', { class: 'muted' }, 'Item Discount: -' + money(estDiscount)));
-                    breakdownBox.appendChild(el('div', {}, 'Shipping: ' + money(estShipping)));
-                    if (estShipDiscount > 0) breakdownBox.appendChild(el('div', { class: 'muted' }, 'Shipping Discount: -' + money(estShipDiscount)));
-                    breakdownBox.appendChild(el('div', {}, 'Tax: ' + money(estTax)));
-                    breakdownBox.appendChild(el('div', { class: 'bold' }, 'Total: ' + money(estSubtotal - estDiscount + estTax + estShipping - estShipDiscount)));
-                }
-                renderBreakdown();
-                summary.appendChild(breakdownBox);
-                const form = el('form', { class: 'form-grid mt-md', attrs: { id: 'checkout-form', autocomplete: 'off' } },
-                    fieldInput('Name', 'cust-name', 'text', true),
-                    fieldInput('Email', 'cust-email', 'text', true),
-                    fieldTextArea('Address', 'cust-address', true),
-                    (function () { const field = el('div', { class: 'field' }); field.appendChild(el('label', { attrs: { for: 'cust-country' } }, 'Country')); const sel = el('select', { attrs: { id: 'cust-country', required: 'true' } }, el('option', { attrs: { value: 'PH' } }, 'Philippines'), el('option', { attrs: { value: 'US' } }, 'United States'), el('option', { attrs: { value: 'CA' } }, 'Canada'), el('option', { attrs: { value: 'DE' } }, 'Germany'), el('option', { attrs: { value: 'FR' } }, 'France'), el('option', { attrs: { value: 'ES' } }, 'Spain'), el('option', { attrs: { value: 'IT' } }, 'Italy'), el('option', { attrs: { value: 'JP' } }, 'Japan'), el('option', { attrs: { value: 'AU' } }, 'Australia'), el('option', { attrs: { value: 'OTHER' } }, 'Other / International')); field.appendChild(sel); return field; })(),
-                    fieldInput('Discount Code (items)', 'discount-code', 'text', false),
-                    fieldInput('Shipping Code', 'shipping-code', 'text', false),
-                    el('div', { class: 'field', attrs: { style: 'grid-column:1/-1;' } }, el('button', { class: 'btn btn-success', attrs: { type: 'submit' } }, 'Place Order'), ' ', el('button', { class: 'btn btn-outline', attrs: { type: 'button', id: 'cancel-checkout' } }, 'Cancel'))
+                const breakdownBox = el('div', { class: 'checkout-breakdown', attrs: { id: 'checkout-breakdown' } });
+                const shippingProgress = el('div', { class: 'checkout-shipping-progress hidden' },
+                    el('div', { class: 'checkout-progress-track' },
+                        el('div', { class: 'checkout-progress-fill' })
+                    ),
+                    el('p', { class: 'checkout-progress-label' }, '')
+                );
+                const totalQuantity = cartLines.reduce((sum, line) => sum + line.quantity, 0);
+                const deliveryWindowLabel = '2-4 days';
+                const deliveryWindowDetail = 'Priority handling';
+                const summaryPill = (label, value, detail) => el('div', { class: 'summary-pill' },
+                    el('span', { class: 'pill-label' }, label),
+                    el('span', { class: 'pill-value' }, value),
+                    detail ? el('span', { class: 'pill-detail' }, detail) : null
+                );
+                const summaryPills = el('div', { class: 'checkout-summary-pills' },
+                    summaryPill('Items', totalQuantity + (totalQuantity === 1 ? ' pc' : ' pcs')),
+                    summaryPill('Tax est.', money(estTax)),
+                    summaryPill('Delivery', deliveryWindowLabel, deliveryWindowDetail)
+                );
+                const editCartBtn = el('button', { class: 'checkout-edit-cart', attrs: { type: 'button' } }, 'Edit bag');
+                editCartBtn.addEventListener('click', () => { close(); navigate('cart'); });
+                const summaryCard = el('div', { class: 'checkout-summary-card' },
+                    el('div', { class: 'checkout-summary-head' },
+                        el('p', { class: 'checkout-eyebrow' }, 'Order overview'),
+                        el('h2', { class: 'checkout-title' }, 'Ready to ship'),
+                        el('p', { class: 'checkout-copy muted' }, 'Review every style, perk, and estimate before placing the order.')
+                    ),
+                    summaryPills,
+                    lineup,
+                    breakdownBox,
+                    shippingProgress,
+                    el('div', { class: 'checkout-security' },
+                        el('span', {}, '256-bit secure checkout'),
+                        el('span', {}, 'Free 30-day returns')
+                    ),
+                    el('div', { class: 'checkout-summary-footer' },
+                        editCartBtn,
+                        el('span', { class: 'checkout-support-hint' }, 'Need help? support@loomwear.shop')
+                    )
+                );
+                const discountApplyBtn = el('button', { class: 'btn discount-apply-btn', attrs: { type: 'button', 'data-apply-kind': 'item' } }, 'Apply');
+                const shippingApplyBtn = el('button', { class: 'btn discount-apply-btn', attrs: { type: 'button', 'data-apply-kind': 'ship' } }, 'Apply');
+                const discountInput = el('input', { attrs: { type: 'text', id: 'discount-code', placeholder: 'e.g. THANKYOU', autocomplete: 'off' } });
+                const shippingInput = el('input', { attrs: { type: 'text', id: 'shipping-code', placeholder: 'e.g. SHIPFREE', autocomplete: 'off' } });
+                const discountField = el('div', { class: 'field code-field' },
+                    el('label', { attrs: { for: 'discount-code' } }, 'Discount Code (items)'),
+                    el('div', { class: 'code-field-controls' }, discountInput, discountApplyBtn)
+                );
+                const shippingField = el('div', { class: 'field code-field' },
+                    el('label', { attrs: { for: 'shipping-code' } }, 'Shipping Code'),
+                    el('div', { class: 'code-field-controls' }, shippingInput, shippingApplyBtn)
+                );
+                const nameField = fieldInput('Name', 'cust-name', 'text', true);
+                const emailField = fieldInput('Email', 'cust-email', 'text', true);
+                const phoneField = fieldInput('Phone number', 'cust-phone', 'tel', true);
+                const addressField = fieldTextArea('Address', 'cust-address', true);
+                const countryField = (function () {
+                    const field = el('div', { class: 'field' });
+                    field.appendChild(el('label', { attrs: { for: 'cust-country' } }, 'Country'));
+                    const sel = el('select', { attrs: { id: 'cust-country', required: 'true' } },
+                        el('option', { attrs: { value: 'PH' } }, 'Philippines'),
+                        el('option', { attrs: { value: 'US' } }, 'United States'),
+                        el('option', { attrs: { value: 'CA' } }, 'Canada'),
+                        el('option', { attrs: { value: 'DE' } }, 'Germany'),
+                        el('option', { attrs: { value: 'FR' } }, 'France'),
+                        el('option', { attrs: { value: 'ES' } }, 'Spain'),
+                        el('option', { attrs: { value: 'IT' } }, 'Italy'),
+                        el('option', { attrs: { value: 'JP' } }, 'Japan'),
+                        el('option', { attrs: { value: 'AU' } }, 'Australia'),
+                        el('option', { attrs: { value: 'OTHER' } }, 'Other / International')
+                    );
+                    field.appendChild(sel);
+                    return field;
+                })();
+                const contactSection = el('div', { class: 'form-section full-span' },
+                    el('div', { class: 'form-section-head' },
+                        el('p', { class: 'form-section-eyebrow' }, 'Contact'),
+                        el('h4', { class: 'form-section-title' }, 'Who is receiving the order?')
+                    ),
+                    nameField,
+                    emailField,
+                    phoneField
+                );
+                const addressSection = el('div', { class: 'form-section full-span' },
+                    el('div', { class: 'form-section-head' },
+                        el('p', { class: 'form-section-eyebrow' }, 'Delivery details'),
+                        el('h4', { class: 'form-section-title' }, 'Where should we send it?')
+                    ),
+                    addressField,
+                    countryField
+                );
+                const codeSection = el('div', { class: 'form-section full-span' },
+                    el('div', { class: 'form-section-head' },
+                        el('p', { class: 'form-section-eyebrow' }, 'Perks'),
+                        el('h4', { class: 'form-section-title' }, 'Have a discount or shipping code?')
+                    ),
+                    discountField,
+                    shippingField
+                );
+                const actionsRow = el('div', { class: 'checkout-actions-row full-span' },
+                    el('button', { class: 'btn btn-success', attrs: { type: 'submit' } }, 'Place Order'),
+                    el('button', { class: 'btn btn-outline', attrs: { type: 'button', id: 'cancel-checkout' } }, 'Cancel'),
+                    el('span', { class: 'checkout-secure-note' }, 'No payment captured until confirmation.')
+                );
+                const form = el('form', { class: 'checkout-form-grid', attrs: { id: 'checkout-form', autocomplete: 'off' } },
+                    contactSection,
+                    addressSection,
+                    codeSection,
+                    actionsRow
                 );
                 if (state.customer) {
                     const nameInput = form.querySelector('#cust-name');
                     const emailInput = form.querySelector('#cust-email');
+                    const phoneInput = form.querySelector('#cust-phone');
                     const addressInput = form.querySelector('#cust-address');
                     const countrySelect = form.querySelector('#cust-country');
                     if (nameInput && state.customer.name) nameInput.value = state.customer.name;
                     if (emailInput && state.customer.email) emailInput.value = state.customer.email;
+                    if (phoneInput && state.customer.phone) phoneInput.value = state.customer.phone;
                     if (addressInput && state.customer.address) addressInput.value = state.customer.address;
                     if (countrySelect && state.customer.country) {
                         const match = Array.from(countrySelect.options || []).some(opt => opt.value === state.customer.country);
                         countrySelect.value = match ? state.customer.country : 'OTHER';
                     }
                 }
+                wrap.classList.add('checkout-modal-surface');
                 wrap.querySelector('#checkout-loading')?.remove();
-                wrap.appendChild(summary);
-                wrap.appendChild(form);
+                const heroTotalValue = el('span', { class: 'checkout-hero-total-amount' }, money(estSubtotal + estTax));
+                const heroBadges = el('div', { class: 'checkout-hero-badges' },
+                    el('span', { class: 'checkout-hero-badge' }, 'Ships in 24h'),
+                    el('span', { class: 'checkout-hero-badge' }, 'Free exchanges'),
+                    el('span', { class: 'checkout-hero-badge' }, totalQuantity + (totalQuantity === 1 ? ' item' : ' items') + ' in bag')
+                );
+                const hero = el('div', { class: 'checkout-hero' },
+                    el('div', { class: 'checkout-hero-copy' },
+                        el('p', { class: 'checkout-eyebrow' }, 'Secure checkout'),
+                        el('h1', { class: 'checkout-hero-title' }, 'Almost there'),
+                        heroBadges,
+                        el('p', { class: 'muted' }, 'Complete your delivery details and we will dispatch the order right away.')
+                    ),
+                    el('div', { class: 'checkout-hero-total' },
+                        el('span', { class: 'label' }, 'Est. total'),
+                        heroTotalValue,
+                        el('span', { class: 'sub-label' }, 'Tax & shipping included')
+                    )
+                );
+                const formCard = el('div', { class: 'checkout-form-card' },
+                    el('div', { class: 'checkout-form-head' },
+                        el('p', { class: 'checkout-eyebrow' }, 'Delivery details'),
+                        el('h3', { class: 'checkout-form-title' }, 'Where should we send it?'),
+                        el('p', { class: 'muted' }, 'We encrypt every submission and never store payment information in-browser.')
+                    ),
+                    form
+                );
+                const layout = el('div', { class: 'checkout-layout' },
+                    el('div', { class: 'checkout-column' }, summaryCard),
+                    el('div', { class: 'checkout-column' }, formCard)
+                );
+                wrap.appendChild(hero);
+                wrap.appendChild(layout);
+                function renderBreakdown() {
+                    breakdownBox.innerHTML = '';
+                    const rows = el('div', { class: 'checkout-breakdown-rows' });
+                    const addRow = (label, value, extra = '') => rows.appendChild(el('div', { class: 'checkout-breakdown-row ' + extra }, el('span', { class: 'label' }, label), el('span', { class: 'value' }, value)));
+                    addRow('Subtotal', money(estSubtotal));
+                    if (estDiscount > 0) addRow('Item discount', '-' + money(estDiscount), 'muted');
+                    addRow('Shipping', money(estShipping));
+                    if (estShipDiscount > 0) addRow('Shipping discount', '-' + money(estShipDiscount), 'muted');
+                    addRow('Tax', money(estTax));
+                    const totalValue = estSubtotal - estDiscount + estTax + estShipping - estShipDiscount;
+                    addRow('Total', money(totalValue), 'total');
+                    breakdownBox.appendChild(rows);
+                    heroTotalValue.textContent = money(totalValue);
+                }
+                renderBreakdown();
+                const progressFill = shippingProgress.querySelector('.checkout-progress-fill');
+                const progressLabel = shippingProgress.querySelector('.checkout-progress-label');
                 function recalcShipping() {
                     const cEl = form.querySelector('#cust-country');
                     const country = cEl ? cEl.value : 'OTHER';
@@ -3586,25 +4101,28 @@
                     else setActiveCurrency('USD');
                     estShipping = baseShip(estSubtotal, country) + perItemShip(country);
                     // Re-render line price amounts with new currency
-                    summary.querySelectorAll('.flex.gap-sm span.muted').forEach((priceSpan, idx) => {
-                        const line = cartLines[idx];
-                        if (!line) return;
-                        const prod = state.productsById.get(line.productId);
-                        if (!prod) return;
-                        priceSpan.textContent = money(prod.priceCents * line.quantity);
+                    linePriceRefs.forEach(ref => {
+                        ref.node.textContent = money(ref.line.unitPriceCents * ref.line.quantity);
                     });
                     renderBreakdown();
+                    const zone = classifyCountry(country);
+                    if (zone === 'DOM') {
+                        const threshold = SHIP_RATES.domesticFreeThreshold;
+                        const progress = Math.min(1, estSubtotal / threshold);
+                        shippingProgress.classList.remove('hidden');
+                        if (progressFill) progressFill.style.width = (progress * 100) + '%';
+                        if (progressLabel) {
+                            const remaining = threshold - estSubtotal;
+                            progressLabel.textContent = remaining > 0 ? 'Spend ' + money(remaining) + ' more to unlock free domestic shipping' : 'Free domestic shipping unlocked';
+                        }
+                    } else {
+                        shippingProgress.classList.add('hidden');
+                    }
                 }
                 recalcShipping();
                 form.addEventListener('change', e => { if (e.target && e.target.id === 'cust-country') recalcShipping(); });
-                const dcInput = form.querySelector('#discount-code'); const shipInput = form.querySelector('#shipping-code');
-                // Removed localStorage prefill so user must manually type codes each checkout.
-                // Inject Apply buttons so discounts are not auto applied
-                const dcField = dcInput.parentElement; const shipField = shipInput.parentElement;
-                dcField.classList.add('code-field'); shipField.classList.add('code-field');
-                const dcApplyBtn = el('button', { class: 'btn discount-apply-btn', attrs: { type: 'button', 'data-apply-kind': 'item' } }, 'Apply');
-                const shipApplyBtn = el('button', { class: 'btn discount-apply-btn', attrs: { type: 'button', 'data-apply-kind': 'ship' } }, 'Apply');
-                dcField.appendChild(dcApplyBtn); shipField.appendChild(shipApplyBtn);
+                const dcInput = discountInput; const shipInput = shippingInput;
+                const dcApplyBtn = discountApplyBtn; const shipApplyBtn = shippingApplyBtn;
                 function styleApply(btn, applied) {
                     if (applied) {
                         btn.classList.add('applied');
@@ -3668,10 +4186,11 @@
                     const customer = {
                         name: form.querySelector('#cust-name').value.trim(),
                         email: form.querySelector('#cust-email').value.trim(),
+                        phone: form.querySelector('#cust-phone').value.trim(),
                         address: form.querySelector('#cust-address').value.trim(),
                         country: form.querySelector('#cust-country').value.trim()
                     };
-                    if (!customer.name || !customer.email || !customer.address) { notify('Fill all customer info', 'warn'); return; }
+                    if (!customer.name || !customer.email || !customer.phone || !customer.address) { notify('Fill all customer info', 'warn'); return; }
                     const discountCode = discountApplied ? (dcInput.value.trim().toUpperCase()) : undefined;
                     const shippingCode = shipDiscountApplied ? (shipInput.value.trim().toUpperCase()) : undefined;
                     const stripeAvailable = Boolean(window.Stripe && state.meta && state.meta.stripePublishableKey);
@@ -3692,7 +4211,9 @@
                             shippingDiscountCents: orderRes.shippingDiscountCents,
                             totalCents: orderRes.totalCents,
                             lines: cartLines,
-                            customer
+                            customer,
+                            etaLabel: deliveryWindowLabel,
+                            etaDetail: deliveryWindowDetail
                         };
                         navigate('order-confirmation');
                     };
@@ -3781,36 +4302,159 @@
     }
 
     function renderOrderConfirmation() {
+        setBodyRoute('order-confirmation');
         rootEl.innerHTML = '';
         const data = state.lastOrder;
         if (!data) { navigate('home'); return; }
-        const panel = el('section', { class: 'panel' },
-            el('div', { class: 'panel-header' }, el('span', {}, 'Order Confirmation')),
-            el('div', { class: 'mt-md' },
-                el('p', {}, 'Thank you, ', el('strong', {}, data.customer.name), '! Your order has been placed.'),
-                el('p', {}, 'Order ID: ', el('code', {}, data.id)),
-                el('div', { class: 'mt-sm' },
-                    el('h3', {}, 'Items'),
-                    el('ul', {}, ...data.lines.map(l => {
-                        const prod = state.productsById.get(l.productId);
-                        return el('li', {}, l.quantity + '× ' + (prod ? prod.title : l.title));
-                    }))
-                ),
-                el('div', { class: 'mt-sm' },
-                    el('div', {}, 'Subtotal: ' + money(data.subtotalCents)),
-                    data.discountCents ? el('div', { class: 'muted' }, 'Item Discount: -' + money(data.discountCents)) : null,
-                    el('div', {}, 'Shipping: ' + money(data.shippingCents || 0)),
-                    data.shippingDiscountCents ? el('div', { class: 'muted' }, 'Shipping Discount: -' + money(data.shippingDiscountCents)) : null,
-                    el('div', { class: 'bold' }, 'Total: ' + money(data.totalCents))
-                ),
-                el('div', { class: 'mt-md' },
-                    el('button', { class: 'btn', attrs: { 'data-route': 'catalog' } }, 'Continue Shopping'),
-                    ' ',
-                    el('button', { class: 'btn btn-outline', attrs: { 'data-route': 'home' } }, 'Home')
-                )
+
+        const subtotal = data.subtotalCents || 0;
+        const discount = data.discountCents || 0;
+        const shipping = data.shippingCents || 0;
+        const shippingDiscount = data.shippingDiscountCents || 0;
+        const total = data.totalCents || (subtotal - discount + shipping - shippingDiscount);
+        const customerName = (data.customer && data.customer.name) || 'Friend';
+        const customerEmail = (data.customer && data.customer.email) || 'No email provided';
+        const customerPhone = (data.customer && data.customer.phone) || 'No phone on file';
+        const itemCount = (Array.isArray(data.lines) ? data.lines : []).reduce((sum, line) => sum + (line.quantity || 0), 0) || data.lines?.length || 0;
+        const etaLabel = data.etaLabel || '2-4 days';
+        const etaDetail = data.etaDetail || 'Priority handling';
+
+        const metaTile = (label, value, detail) => el('div', { class: 'oc-meta-tile' },
+            el('span', { class: 'oc-meta-label' }, label),
+            el('span', { class: 'oc-meta-value' }, value),
+            detail ? el('span', { class: 'oc-meta-detail muted tiny' }, detail) : null
+        );
+
+        const hero = el('section', { class: 'oc-hero-card' },
+            el('div', { class: 'oc-hero-chip' },
+                el('span', { class: 'oc-hero-dot' }),
+                'Order confirmed'
+            ),
+            el('h1', { class: 'oc-hero-title' }, `Thank you, ${customerName}!`),
+            el('p', { class: 'oc-hero-copy muted' }, 'We sent a receipt and live tracking link to your inbox. You will receive SMS updates once the parcel ships.'),
+            el('div', { class: 'oc-meta-grid' },
+                metaTile('Order ID', data.id, 'Share this for support'),
+                metaTile('Total paid', money(total), 'VAT inclusive'),
+                metaTile('Email', customerEmail),
+                metaTile('Phone', customerPhone)
             )
         );
-        rootEl.appendChild(panel);
+
+        const quickStat = (label, value, detail) => el('div', { class: 'oc-quick-stat' },
+            el('span', { class: 'oc-quick-label' }, label),
+            el('span', { class: 'oc-quick-value' }, value),
+            detail ? el('span', { class: 'oc-quick-detail muted tiny' }, detail) : null
+        );
+
+        const quickStats = el('section', { class: 'oc-quick-stats' },
+            quickStat('Order', data.id, 'Placed just now'),
+            quickStat('Arrives', etaLabel, etaDetail),
+            quickStat('Total', money(total)),
+            quickStat('Items', itemCount ? itemCount + (itemCount === 1 ? ' item' : ' items') : '0')
+        );
+
+        const lineItems = el('div', { class: 'oc-items-list' },
+            ...data.lines.map(line => {
+                const product = state.productsById.get(line.productId);
+                const imageSrc = (product && Array.isArray(product.images) && product.images[0]) || productPlaceholder(280);
+                const title = product ? product.title : (line.title || 'Item');
+                const variant = line.variantLabel || (line.variantName || '');
+                const qty = line.quantity || 1;
+                const unit = typeof line.unitPriceCents === 'number' ? line.unitPriceCents : Math.round((line.totalCents || subtotal) / Math.max(qty, 1));
+                const totalLine = unit * qty;
+                return el('div', { class: 'oc-item' },
+                    el('div', { class: 'oc-item-thumb' },
+                        el('img', { attrs: { src: imageSrc, alt: title, loading: 'lazy' } })
+                    ),
+                    el('div', { class: 'oc-item-info' },
+                        el('div', { class: 'oc-item-top' },
+                            el('span', { class: 'oc-item-qty-pill' }, qty + '×'),
+                            el('p', { class: 'oc-item-title' }, title)
+                        ),
+                        variant ? el('span', { class: 'oc-item-variant muted tiny' }, variant) : null,
+                        el('span', { class: 'oc-item-unit muted tiny' }, 'Unit ' + money(unit))
+                    ),
+                    el('div', { class: 'oc-item-price' }, money(totalLine))
+                );
+            })
+        );
+
+        const totals = el('div', { class: 'oc-totals' },
+            el('div', { class: 'oc-totals-row' }, el('span', {}, 'Subtotal'), el('span', {}, money(subtotal))),
+            discount ? el('div', { class: 'oc-totals-row muted' }, el('span', {}, 'Item discount'), el('span', {}, '-' + money(discount))) : null,
+            el('div', { class: 'oc-totals-row' }, el('span', {}, 'Shipping'), el('span', {}, money(shipping))),
+            shippingDiscount ? el('div', { class: 'oc-totals-row muted' }, el('span', {}, 'Shipping discount'), el('span', {}, '-' + money(shippingDiscount))) : null,
+            el('div', { class: 'oc-totals-row total' }, el('span', {}, 'Total paid'), el('span', {}, money(total)))
+        );
+
+        const steps = el('ol', { class: 'oc-steps' },
+            el('li', {},
+                el('span', { class: 'oc-step-label' }, 'Processing'),
+                el('p', { class: 'tiny muted' }, 'We are packing your items and verifying the shipping address.')
+            ),
+            el('li', {},
+                el('span', { class: 'oc-step-label' }, 'Shipping soon'),
+                el('p', { class: 'tiny muted' }, 'Once the courier picks up the parcel, we will send tracking updates via email and SMS.')
+            ),
+            el('li', {},
+                el('span', { class: 'oc-step-label' }, 'Delivery'),
+                el('p', { class: 'tiny muted' }, 'Priority handling arrives within 2-4 days. Reach out if you need to adjust the delivery window.')
+            )
+        );
+
+        const summaryGrid = el('div', { class: 'oc-summary-grid' },
+            el('div', { class: 'oc-card oc-items-card' },
+                el('div', { class: 'oc-card-head' },
+                    el('span', { class: 'oc-card-eyebrow' }, 'Lineup'),
+                    el('h2', { class: 'oc-card-title' }, 'What is on the way')
+                ),
+                lineItems
+            ),
+            el('div', { class: 'oc-card oc-breakdown-card' },
+                el('div', { class: 'oc-card-head' },
+                    el('span', { class: 'oc-card-eyebrow' }, 'Summary'),
+                    el('h2', { class: 'oc-card-title' }, 'Charge breakdown')
+                ),
+                totals,
+                el('div', { class: 'oc-card-divider' }),
+                el('div', { class: 'oc-card-head' },
+                    el('span', { class: 'oc-card-eyebrow' }, 'Next up'),
+                    el('h3', { class: 'oc-card-title' }, 'Delivery timeline')
+                ),
+                steps
+            )
+        );
+
+        const detailsWrap = el('section', { class: 'oc-details collapsed', attrs: { id: 'oc-details-panel' } }, summaryGrid);
+
+        const toggleBtn = el('button', { class: 'oc-toggle-details', attrs: { type: 'button', 'aria-controls': 'oc-details-panel', 'aria-expanded': 'false' } }, 'View full receipt');
+
+        const actions = el('div', { class: 'oc-actions' },
+            el('button', { class: 'btn btn-success', attrs: { 'data-route': 'catalog' } }, 'Continue shopping'),
+            el('button', { class: 'btn btn-outline', attrs: { 'data-route': 'home' } }, 'Return home'),
+            el('button', { class: 'btn btn-outline', attrs: { type: 'button', id: 'oc-print' } }, 'Save receipt')
+        );
+
+        const shell = el('div', { class: 'order-confirmation-shell container' }, hero, quickStats, toggleBtn, detailsWrap, actions);
+        rootEl.appendChild(shell);
+
+        const printBtn = shell.querySelector('#oc-print');
+        if (printBtn) {
+            printBtn.addEventListener('click', () => {
+                try {
+                    window.print();
+                } catch (err) {
+                    notify('Unable to trigger print: ' + err.message, 'error', 4000);
+                }
+            });
+        }
+
+        toggleBtn.addEventListener('click', () => {
+            const isCollapsed = detailsWrap.classList.toggle('collapsed');
+            const expanded = !isCollapsed;
+            toggleBtn.textContent = expanded ? 'Hide full receipt' : 'View full receipt';
+            toggleBtn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        });
     }
 
     async function maybeHandleStripeReturn() {
@@ -3847,7 +4491,9 @@
                             quantity: item.quantity,
                             title: item.titleSnapshot,
                             unitPriceCents: item.unitPriceCents
-                        }))
+                        })),
+                        etaLabel: '2-4 days',
+                        etaDetail: 'Priority handling'
                     };
                     state.cart = [];
                     saveCart();
@@ -3909,6 +4555,7 @@
             state.myOrders = [];
             state.myOrdersEmail = '';
             state.myOrdersDetailCache.clear();
+            state.customerRefundThreads = new Map();
             const prompt = el('div', { class: 'mo-empty-state' },
                 el('h3', {}, 'Sign in to view orders'),
                 el('p', {}, 'Sign in with your account to see your order history.'),
@@ -3924,6 +4571,7 @@
         if (state.myOrdersEmail !== accountEmail) {
             state.myOrders = [];
             state.myOrdersDetailCache.clear();
+            state.customerRefundThreads = new Map();
         }
         state.myOrdersEmail = accountEmail;
 
@@ -3981,11 +4629,25 @@
             })
         );
 
+        const refundShortcutCount = el('span', { class: 'mo-tabbar-cta-count' }, '0');
+        const refundShortcutBtn = el('button', {
+            class: 'mo-button mo-button--ghost mo-button--compact mo-tabbar-cta',
+            attrs: { type: 'button', 'data-refund-shortcut': '1' }
+        },
+            el('span', { class: 'mo-tabbar-cta-label' }, 'Refund status'),
+            refundShortcutCount
+        );
+        refundShortcutBtn.hidden = true;
+        refundShortcutCount.hidden = true;
+
+        const tabSection = el('div', { class: 'mo-tabbar-row' }, tabBar, refundShortcutBtn);
         const content = el('div', { class: 'mo-orders', attrs: { id: 'my-orders-content' } });
 
         shell.appendChild(searchBar);
-        shell.appendChild(tabBar);
+        shell.appendChild(tabSection);
         shell.appendChild(content);
+
+        refundShortcutBtn.addEventListener('click', () => showRefundSummaryModal());
         rootEl.appendChild(shell);
 
         function ensureProductsLoaded() {
@@ -4053,10 +4715,132 @@
             };
         }
 
+        function shouldShowRefundSection(order) {
+            return !!(order && order.returnRequestedAt);
+        }
+
+        function buildRefundDetailSection(order) {
+            if (!shouldShowRefundSection(order)) return null;
+            const orderId = order.id || '';
+            const statusKey = getRefundStatus(order.returnAdminStatus);
+            const statusLabel = formatRefundStatus(statusKey);
+            const requestedCopy = order.returnRequestedAt ? formatDateTimeStamp(order.returnRequestedAt) : '—';
+            const lastUpdateCopy = order.returnAdminRespondedAt ? formatDateTimeStamp(order.returnAdminRespondedAt) : 'Awaiting response';
+            const reasonText = (order.returnReason || '').trim() || 'You did not include extra notes with this request.';
+            const usageCopy = describeRefundUsage(order);
+            const messageFieldId = `refund-message-${orderId || Math.random().toString(36).slice(2)}`;
+            return el('div', { class: 'mo-detail-section mo-refund-section', attrs: { 'data-refund-section': orderId } },
+                el('div', { class: 'mo-refund-header' },
+                    el('div', { class: 'mo-refund-title-stack' },
+                        el('h4', { class: 'mo-detail-title' }, 'Refund updates'),
+                        el('p', { class: 'mo-refund-subtitle' }, 'See the latest status and chat with our team.')
+                    ),
+                    el('span', { class: `admin-refund-status-chip status-${statusKey}` }, statusLabel)
+                ),
+                el('div', { class: 'mo-refund-meta' },
+                    el('div', { class: 'mo-refund-meta-card' },
+                        el('span', { class: 'tiny muted' }, 'Requested on'),
+                        el('span', {}, requestedCopy)
+                    ),
+                    el('div', { class: 'mo-refund-meta-card' },
+                        el('span', { class: 'tiny muted' }, 'Last update'),
+                        el('span', {}, lastUpdateCopy)
+                    )
+                ),
+                el('div', { class: 'mo-refund-reason-wrap' },
+                    el('span', { class: 'tiny muted' }, 'Issue shared'),
+                    el('p', { class: 'mo-refund-reason' }, reasonText)
+                ),
+                usageCopy ? el('p', { class: 'mo-refund-usage tiny muted' }, usageCopy) : null,
+                el('div', { class: 'admin-refund-thread mo-refund-thread' },
+                    el('div', { class: 'admin-refund-thread-messages mo-refund-thread-messages', attrs: { 'data-customer-refund-messages': orderId } },
+                        el('p', { class: 'tiny muted' }, 'Conversation loads when you expand this order.')
+                    ),
+                    el('form', { class: 'admin-refund-reply mo-refund-reply', attrs: { 'data-customer-refund-form': orderId } },
+                        el('label', { class: 'tiny muted', attrs: { for: messageFieldId } }, 'Message the store team'),
+                        el('textarea', {
+                            class: 'mo-refund-textarea',
+                            attrs: {
+                                id: messageFieldId,
+                                placeholder: 'Share new details or ask a question…',
+                                rows: '3',
+                                maxlength: '2000',
+                                required: 'true'
+                            }
+                        }),
+                        el('div', { class: 'mo-refund-reply-actions' },
+                            el('button', { class: 'mo-button mo-button--primary mo-button--compact', attrs: { type: 'submit' } }, 'Send')
+                        )
+                    )
+                )
+            );
+        }
+
+        function getRefundOrders() {
+            return deriveMyOrders()
+                .map(order => mergedOrder(order) || order)
+                .filter(order => !!(order && order.returnRequestedAt));
+        }
+
+        function buildRefundOverviewCard(order) {
+            if (!order) return el('div');
+            const statusKey = getRefundStatus(order.returnAdminStatus);
+            const statusLabel = formatRefundStatus(statusKey);
+            const requestedCopy = order.returnRequestedAt ? formatDateTimeStamp(order.returnRequestedAt) : 'Awaiting submission';
+            const lastUpdateCopy = order.returnAdminRespondedAt ? formatDateTimeStamp(order.returnAdminRespondedAt) : 'Awaiting response';
+            const usageCopy = describeRefundUsage(order);
+            const items = (order.items || []).map(enrichItem).filter(Boolean);
+            const previewItems = items.slice(0, 2);
+            const extraCount = Math.max(0, items.length - previewItems.length);
+            return el('article', { class: 'refund-overview-card', attrs: { 'data-refund-order': order.id } },
+                el('div', { class: 'refund-overview-head' },
+                    el('div', { class: 'refund-overview-id' },
+                        el('span', { class: 'tiny muted' }, 'Order'),
+                        el('strong', {}, `#${String(order.id).slice(0, 10)}`)
+                    ),
+                    el('span', { class: `admin-refund-status-chip status-${statusKey}` }, statusLabel)
+                ),
+                el('div', { class: 'refund-overview-meta' },
+                    el('div', { class: 'refund-overview-meta-entry' },
+                        el('span', { class: 'tiny muted' }, 'Requested on'),
+                        el('span', {}, requestedCopy)
+                    ),
+                    el('div', { class: 'refund-overview-meta-entry' },
+                        el('span', { class: 'tiny muted' }, 'Last update'),
+                        el('span', {}, lastUpdateCopy)
+                    )
+                ),
+                el('div', { class: 'refund-overview-reason-wrap' },
+                    el('span', { class: 'tiny muted' }, 'Issue shared'),
+                    el('p', { class: 'refund-overview-reason' }, (order.returnReason || '').trim() || 'No reason provided.')
+                ),
+                usageCopy ? el('p', { class: 'refund-overview-usage tiny muted' }, usageCopy) : null,
+                el('div', { class: 'refund-overview-products' },
+                    previewItems.length
+                        ? previewItems.map(item => el('div', { class: 'refund-overview-product' },
+                            item.image ? el('img', { attrs: { src: item.image, alt: item.title || 'Product' } }) : el('span', { class: 'mo-thumb-placeholder refund-overview-thumb' }, item.title?.charAt(0) || '•'),
+                            el('div', { class: 'refund-overview-product-info' },
+                                el('span', { class: 'refund-overview-product-title' }, item.title || 'Item'),
+                                el('span', { class: 'refund-overview-product-qty tiny muted' }, `Quantity: ${item.quantity || 1}`)
+                            )
+                        ))
+                        : [el('p', { class: 'tiny muted' }, 'We will load items as soon as they are available.')]
+                ),
+                extraCount ? el('span', { class: 'refund-overview-more tiny muted' }, `+${extraCount} more item${extraCount === 1 ? '' : 's'}`) : null,
+                el('div', { class: 'refund-overview-actions' },
+                    el('button', {
+                        class: 'mo-button mo-button--primary mo-button--compact',
+                        attrs: { type: 'button', 'data-refund-overview-open': order.id }
+                    }, 'Open conversation')
+                )
+            );
+        }
+
         function buildOrderCard(order) {
             if (!order) return el('div');
             const status = buildStatusMeta(order);
             const card = el('article', { class: 'mo-order-card', attrs: { 'data-order-id': order.id } });
+            card.setAttribute('data-has-refund', shouldShowRefundSection(order) ? '1' : '0');
             const head = el('div', { class: 'mo-order-head' },
                 el('div', { class: 'mo-order-reference' },
                     el('span', { class: 'mo-order-number' }, `Order #${(order.id || '').toString().slice(0, 12)}`),
@@ -4067,7 +4851,7 @@
                 ),
                 el('div', { class: 'mo-order-status-group' },
                     el('span', { class: `mo-status-chip ${status.className}` }, status.label),
-                    order.returnRequestedAt ? el('span', { class: 'mo-status-chip mo-status-chip--returns' }, 'Return Requested') : null
+                    order.returnRequestedAt ? el('span', { class: 'mo-status-chip mo-status-chip--returns', attrs: { 'data-refund-status-chip': order.id } }, formatRefundStatus(order.returnAdminStatus)) : null
                 )
             );
 
@@ -4104,11 +4888,13 @@
             const actions = el('div', { class: 'mo-order-actions' },
                 !order.paidAt && !order.cancelledAt ? el('button', { class: 'mo-button mo-button--primary mo-button--compact', attrs: { 'data-pay': order.id } }, 'Pay now') : null,
                 order.shippedAt && !order.completedAt ? el('button', { class: 'mo-button mo-button--subtle mo-button--compact', attrs: { 'data-track': order.id } }, 'Track order') : null,
-                order.completedAt && !order.returnRequestedAt ? el('button', { class: 'mo-button mo-button--ghost mo-button--compact', attrs: { 'data-return': order.id } }, 'Return / Refund') : null,
+                order.shippedAt && !order.returnRequestedAt && !order.cancelledAt ? el('button', { class: 'mo-button mo-button--ghost mo-button--compact', attrs: { 'data-return': order.id } }, 'Return / Refund') : null,
                 el('button', { class: 'mo-button mo-button--ghost mo-button--compact', attrs: { 'data-toggle-detail': order.id, 'aria-expanded': 'false' } }, 'View details')
             );
 
             const detailSections = [];
+            const refundSection = buildRefundDetailSection(order);
+            if (refundSection) detailSections.push(refundSection);
             if (order.events && order.events.length) {
                 detailSections.push(
                     el('div', { class: 'mo-detail-section' },
@@ -4292,9 +5078,20 @@
             });
         }
 
+        function setRefundShortcutState(orderList = []) {
+            const refundCount = Array.isArray(orderList)
+                ? orderList.reduce((sum, order) => sum + (order?.returnRequestedAt ? 1 : 0), 0)
+                : 0;
+            refundShortcutCount.textContent = String(refundCount);
+            refundShortcutCount.hidden = refundCount === 0;
+            refundShortcutBtn.hidden = refundCount === 0;
+            refundShortcutBtn.disabled = refundCount === 0;
+        }
+
         function renderOrders() {
             const orders = deriveMyOrders();
             const enriched = orders.map(o => mergedOrder(o)).filter(Boolean);
+            setRefundShortcutState(enriched);
             updateTabCounts();
             const filtered = enriched.filter(order => {
                 if (activeTab !== 'all' && orderBucket(order) !== activeTab) return false;
@@ -4311,6 +5108,189 @@
             content.innerHTML = '';
             filtered.forEach(order => {
                 content.appendChild(buildOrderCard(order));
+            });
+        }
+
+        function ensureOrderDetailVisible(card, orderId, { focusSection } = {}) {
+            if (!card) return null;
+            const detail = card.querySelector('.mo-order-detail');
+            if (!detail) return null;
+            if (detail.classList.contains('hidden')) {
+                detail.classList.remove('hidden');
+                card.classList.add('expanded');
+                const toggleBtn = card.querySelector('[data-toggle-detail]');
+                if (toggleBtn) {
+                    toggleBtn.setAttribute('aria-expanded', 'true');
+                    toggleBtn.textContent = 'Hide details';
+                }
+            }
+            if (focusSection === 'refund') {
+                const section = card.querySelector(`[data-refund-section="${CSS.escape(orderId)}"]`);
+                if (section) section.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+            return detail;
+        }
+
+        async function ensureCustomerRefundThread(orderId, card, { force = false } = {}) {
+            if (!orderId) return;
+            const store = getRefundThreadStore('customer');
+            const targetCard = card || content.querySelector(`.mo-order-card[data-order-id="${CSS.escape(orderId)}"]`);
+            if (!targetCard) return;
+            const container = targetCard.querySelector(`[data-customer-refund-messages="${CSS.escape(orderId)}"]`);
+            if (!container) return;
+            const cache = store.get(orderId);
+            if (!cache || force || cache.error) {
+                container.innerHTML = '<p class="tiny muted">Loading conversation…</p>';
+                try {
+                    await loadRefundMessages(orderId, { scope: 'customer', force });
+                } catch (err) {
+                    container.innerHTML = `<p class="tiny alert">Unable to load conversation: ${err.message}</p>`;
+                    console.warn('[refund-thread] customer load failed for', orderId, err);
+                    return;
+                }
+            }
+            renderRefundMessagesThread(orderId, { scope: 'customer', root: targetCard });
+            container.scrollTop = container.scrollHeight;
+        }
+
+        async function submitCustomerRefundForm(form, rootNode) {
+            const orderId = form.getAttribute('data-customer-refund-form');
+            if (!orderId) return;
+            const textarea = form.querySelector('textarea');
+            const value = textarea ? textarea.value.trim() : '';
+            if (!value) {
+                if (textarea) textarea.focus();
+                return;
+            }
+            const submitBtn = form.querySelector('button[type="submit"]');
+            if (submitBtn) submitBtn.disabled = true;
+            try {
+                await postRefundMessage(orderId, value, { scope: 'customer' });
+                if (textarea) textarea.value = '';
+                notify('Message sent', 'success', 2200);
+                await ensureCustomerRefundThread(orderId, rootNode || form.closest('.mo-order-card'), { force: true });
+            } catch (err) {
+                notify(err.message || 'Unable to send message', 'error');
+            } finally {
+                if (submitBtn) submitBtn.disabled = false;
+            }
+        }
+
+        function showRefundSummaryModal() {
+            const refundOrders = getRefundOrders();
+            showModal(close => {
+                const wrap = el('div', { class: 'modal refund-summary-modal' });
+                wrap.appendChild(el('button', { class: 'modal-close', attrs: { type: 'button' } }, '×'));
+                wrap.appendChild(el('h2', { class: 'refund-summary-title' }, 'Refund requests'));
+                wrap.appendChild(el('p', { class: 'refund-summary-subtitle muted' }, 'Track every return or refund conversation in one place.'));
+                if (!refundOrders.length) {
+                    wrap.appendChild(
+                        el('div', { class: 'refund-overview-empty' },
+                            el('p', {}, 'No refund requests yet.'),
+                            el('span', { class: 'tiny muted' }, 'Return an item from the Orders list to see it appear here.')
+                        )
+                    );
+                } else {
+                    const list = el('div', { class: 'refund-overview-list' }, refundOrders.map(buildRefundOverviewCard));
+                    wrap.appendChild(list);
+                }
+                modalRoot.appendChild(wrap);
+                const closeBtn = wrap.querySelector('.modal-close');
+                if (closeBtn) closeBtn.addEventListener('click', close);
+                wrap.querySelectorAll('[data-refund-overview-open]').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const targetId = btn.getAttribute('data-refund-overview-open');
+                        close();
+                        showRefundConversationModal(targetId);
+                    });
+                });
+            });
+        }
+
+        function showRefundConversationModal(orderId) {
+            if (!orderId) return;
+            const base = deriveMyOrders().find(order => String(order?.id) === String(orderId));
+            const order = mergedOrder(base) || base;
+            if (!order) {
+                notify('We could not find that refund request.', 'warn');
+                return;
+            }
+            const statusKey = getRefundStatus(order.returnAdminStatus);
+            const statusLabel = formatRefundStatus(statusKey);
+            const requestedCopy = order.returnRequestedAt ? formatDateTimeStamp(order.returnRequestedAt) : 'Awaiting submission';
+            const lastUpdateCopy = order.returnAdminRespondedAt ? formatDateTimeStamp(order.returnAdminRespondedAt) : 'Awaiting response';
+            const messageFieldId = `refund-modal-message-${order.id}`;
+            const items = (order.items || []).map(enrichItem).filter(Boolean);
+            showModal(close => {
+                const wrap = el('div', { class: 'modal refund-convo-modal', attrs: { 'data-refund-convo': order.id } });
+                wrap.appendChild(el('button', { class: 'modal-close', attrs: { type: 'button' } }, '×'));
+                wrap.appendChild(el('div', { class: 'refund-convo-header' },
+                    el('div', { class: 'refund-convo-heading' },
+                        el('span', { class: 'tiny muted' }, 'Order'),
+                        el('h3', {}, `#${String(order.id).slice(0, 12)}`)
+                    ),
+                    el('div', { class: 'refund-convo-status' },
+                        el('span', { class: `admin-refund-status-chip status-${statusKey}` }, statusLabel),
+                        el('div', { class: 'refund-convo-meta' },
+                            el('span', {}, `Requested ${requestedCopy}`),
+                            el('span', { class: 'tiny muted' }, `Last update ${lastUpdateCopy}`)
+                        )
+                    )
+                ));
+                wrap.appendChild(el('div', { class: 'refund-convo-products' },
+                    items.length
+                        ? items.map(item => el('div', { class: 'refund-convo-product' },
+                            item.image ? el('img', { attrs: { src: item.image, alt: item.title || 'Product' } }) : el('span', { class: 'mo-thumb-placeholder refund-overview-thumb' }, item.title?.charAt(0) || '•'),
+                            el('div', { class: 'refund-convo-product-info' },
+                                el('span', { class: 'refund-convo-product-title' }, item.title || 'Item'),
+                                el('span', { class: 'tiny muted' }, `Quantity: ${item.quantity || 1}`)
+                            )
+                        ))
+                        : el('p', { class: 'tiny muted' }, 'Products will appear here once loaded.')
+                ));
+                wrap.appendChild(el('div', { class: 'refund-convo-reason' },
+                    el('span', { class: 'tiny muted' }, 'Issue shared'),
+                    el('p', {}, (order.returnReason || '').trim() || 'No reason provided.')
+                ));
+                const thread = el('div', { class: 'admin-refund-thread mo-refund-thread refund-convo-thread' },
+                    el('div', {
+                        class: 'admin-refund-thread-messages mo-refund-thread-messages',
+                        attrs: { 'data-customer-refund-messages': order.id }
+                    },
+                        el('p', { class: 'tiny muted' }, 'Conversation loads shortly...')
+                    ),
+                    el('form', {
+                        class: 'admin-refund-reply mo-refund-reply',
+                        attrs: { 'data-customer-refund-form': order.id }
+                    },
+                        el('label', { class: 'tiny muted', attrs: { for: messageFieldId } }, 'Message the store team'),
+                        el('textarea', {
+                            class: 'mo-refund-textarea',
+                            attrs: {
+                                id: messageFieldId,
+                                rows: '3',
+                                maxlength: '2000',
+                                placeholder: 'Ask for an update or share new info…',
+                                required: 'true'
+                            }
+                        }),
+                        el('div', { class: 'mo-refund-reply-actions' },
+                            el('button', { class: 'mo-button mo-button--primary mo-button--compact', attrs: { type: 'submit' } }, 'Send message')
+                        )
+                    )
+                );
+                wrap.appendChild(thread);
+                modalRoot.appendChild(wrap);
+                const closeBtn = wrap.querySelector('.modal-close');
+                if (closeBtn) closeBtn.addEventListener('click', close);
+                ensureCustomerRefundThread(order.id, wrap);
+                const form = wrap.querySelector('[data-customer-refund-form]');
+                if (form) {
+                    form.addEventListener('submit', evt => {
+                        evt.preventDefault();
+                        submitCustomerRefundForm(form, wrap);
+                    });
+                }
             });
         }
 
@@ -4361,6 +5341,7 @@
 
                 state.myOrders = Array.isArray(data?.orders) ? data.orders : [];
                 state.myOrdersDetailCache.clear();
+                state.customerRefundThreads = new Map();
                 renderOrders();
                 await hydrateOrders(state.myOrders);
                 renderOrders();
@@ -4505,6 +5486,9 @@
                 card.classList.toggle('expanded', !nowHidden);
                 toggleBtn.setAttribute('aria-expanded', nowHidden ? 'false' : 'true');
                 toggleBtn.textContent = nowHidden ? 'View details' : 'Hide details';
+                if (!nowHidden && card.getAttribute('data-has-refund') === '1') {
+                    ensureCustomerRefundThread(orderId, card);
+                }
                 return;
             }
             const trackBtn = evt.target.closest('[data-track]');
@@ -4547,6 +5531,13 @@
             }
         });
 
+        content.addEventListener('submit', evt => {
+            const form = evt.target.closest('[data-customer-refund-form]');
+            if (!form) return;
+            evt.preventDefault();
+            submitCustomerRefundForm(form, form.closest('.mo-order-card'));
+        });
+
         ensureProductsLoaded();
         if (state.myOrders && state.myOrders.length) {
             renderOrders();
@@ -4570,6 +5561,7 @@
         const sectionDefs = [
             { key: 'products', label: 'Products' },
             { key: 'orders', label: 'Orders' },
+            { key: 'refunds', label: 'Refunds' },
             { key: 'reviews', label: 'Reviews Moderation' },
             { key: 'discounts', label: 'Discounts' },
             { key: 'low-stock', label: 'Low Stock' },
@@ -4668,17 +5660,37 @@
             }
         }
 
-        const ordersWrap = el('div', { class: 'panel mt-md', attrs: { 'data-admin-section': 'orders' } },
-            el('div', { class: 'panel-header' },
-                el('span', {}, 'Orders'),
+        const ordersWrap = el('div', { class: 'panel admin-orders-panel mt-md', attrs: { 'data-admin-section': 'orders' } },
+            el('div', { class: 'panel-header admin-orders-header' },
+                el('div', { class: 'flex flex-col gap-xxs' },
+                    el('span', { class: 'pv-eyebrow tiny muted' }, 'Operations'),
+                    el('span', { class: 'admin-orders-title' }, 'Orders overview')
+                ),
                 el('div', { class: 'inline-fields' },
                     el('button', { class: 'btn btn-small btn-outline', attrs: { id: 'orders-refresh-btn' } }, 'Refresh')
                 )
             ),
-            el('div', { class: 'admin-table-wrapper' }, el('table', { class: 'admin-table', attrs: { id: 'admin-orders-table' } }))
+            el('div', { class: 'admin-orders-summary', attrs: { id: 'admin-orders-summary' } }),
+            el('div', { class: 'admin-orders-board', attrs: { id: 'admin-orders-table' } })
         );
         rootEl.appendChild(ordersWrap);
         sectionRefs.set('orders', ordersWrap);
+
+        const refundsPanel = el('div', { class: 'panel admin-refunds-panel mt-md', attrs: { 'data-admin-section': 'refunds' } },
+            el('div', { class: 'panel-header admin-refunds-header' },
+                el('div', { class: 'flex flex-col gap-xxs' },
+                    el('span', { class: 'pv-eyebrow tiny muted' }, 'Support'),
+                    el('span', { class: 'admin-refunds-title' }, 'Refund requests')
+                ),
+                el('div', { class: 'inline-fields' },
+                    el('button', { class: 'btn btn-small btn-outline', attrs: { id: 'refunds-refresh-btn' } }, 'Refresh')
+                )
+            ),
+            el('div', { class: 'admin-refunds-summary', attrs: { id: 'admin-refunds-summary' } }),
+            el('div', { class: 'admin-refunds-list', attrs: { id: 'admin-refunds-list' } })
+        );
+        rootEl.appendChild(refundsPanel);
+        sectionRefs.set('refunds', refundsPanel);
 
         const reviewsPanel = el('div', { class: 'panel mt-md', attrs: { 'data-admin-section': 'reviews' } },
             el('div', { class: 'panel-header' },
@@ -4936,53 +5948,267 @@
                 tbody.appendChild(tr);
             });
         }
-        // Orders table
+        const ordersSummaryEl = document.getElementById('admin-orders-summary');
         const ot = document.getElementById('admin-orders-table');
-        if (ot) {
-            ot.innerHTML = `
-            <thead><tr><th>ID</th><th>Items</th><th>Subtotal</th><th>Item Disc</th><th>Ship</th><th>Ship Disc</th><th>Total</th><th>Codes</th><th>Status</th><th>Timestamps</th><th>Customer</th><th>Actions</th></tr></thead><tbody></tbody>`;
-            const tbody = ot.querySelector('tbody');
-            for (const o of state.admin.orders) {
-                const customerLabel = o.customerName || o.customerEmail || '—';
-                const itemsText = o.items && o.items.length ? o.items.map(i => `${i.quantity}×${i.titleSnapshot}`).join('; ') : '—';
-                const tsParts = [];
-                if (o.paidAt) tsParts.push('Paid:' + new Date(o.paidAt).toLocaleString());
-                if (o.fulfilledAt) tsParts.push('Fulfilled:' + new Date(o.fulfilledAt).toLocaleString());
-                if (o.shippedAt) tsParts.push('Shipped:' + new Date(o.shippedAt).toLocaleString());
-                if (o.completedAt) tsParts.push('Delivered:' + new Date(o.completedAt).toLocaleString());
-                if (o.cancelledAt) tsParts.push('Cancelled:' + new Date(o.cancelledAt).toLocaleString());
-                const statusValue = typeof o.status === 'string' ? o.status : 'unknown';
-                const normalizedStatus = statusValue.toLowerCase();
-                const statusClassMap = {
-                    cancelled: 'cancelled',
-                    created: 'created',
-                    paid: 'paid',
-                    completed: 'completed',
-                    approved: 'approved',
-                    rejected: 'not-approved'
-                };
-                const statusClass = statusClassMap[normalizedStatus] || '';
-                const statusLabel = statusValue.replace(/_/g, ' ');
-                const statusPill = el('span', { class: `status-chip${statusClass ? ' ' + statusClass : ''}` }, statusLabel);
-                const tr = el('tr', {},
-                    el('td', {}, o.id.slice(0, 8) + '…'),
-                    el('td', {}, itemsText),
-                    el('td', {}, money(o.subtotalCents)),
-                    el('td', {}, o.discountCents ? '-' + money(o.discountCents, { showBase: false }) : '—'),
-                    el('td', {}, money(o.shippingCents || 0)),
-                    el('td', {}, o.shippingDiscountCents ? '-' + money(o.shippingDiscountCents, { showBase: false }) : '—'),
-                    el('td', {}, money(o.totalCents)),
-                    el('td', {}, [o.discountCode, o.shippingCode].filter(Boolean).join(' | ') || '—'),
-                    el('td', {}, statusPill),
-                    el('td', {}, tsParts.join(' | ') || new Date(o.createdAt).toLocaleString()),
-                    el('td', {}, customerLabel),
-                    el('td', {}, buildOrderActions(o))
-                );
-                tbody.appendChild(tr);
+        const orders = getAdminOrders();
+        if (!state.admin.ordersFilter) state.admin.ordersFilter = 'all';
+        const activeFilter = state.admin.ordersFilter;
+        const productMap = state.productsById instanceof Map ? state.productsById : new Map();
+        const lookupProduct = (id) => {
+            if (id == null) return null;
+            if (productMap.has(id)) return productMap.get(id);
+            const str = String(id);
+            if (productMap.has(str)) return productMap.get(str);
+            const num = Number(id);
+            if (!Number.isNaN(num) && productMap.has(num)) return productMap.get(num);
+            return null;
+        };
+        const resolveItemImage = (item) => {
+            if (!item) return productPlaceholder(360);
+            const candidate = item.image || item.thumbnail || (Array.isArray(item.images) && item.images[0]) || item.imageUrl;
+            if (candidate) return candidate;
+            const product = lookupProduct(item.productId);
+            const productImages = product?.images;
+            if (Array.isArray(productImages) && productImages[0]) return productImages[0];
+            if (typeof productImages === 'string') return productImages;
+            return productPlaceholder(360);
+        };
+
+        if (ordersSummaryEl) {
+            const stats = {};
+            let revenueCents = 0;
+            for (const order of orders) {
+                const key = (order.status || 'created').toLowerCase();
+                stats[key] = (stats[key] || 0) + 1;
+                revenueCents += order.totalCents || 0;
             }
+            const summaryData = [
+                { label: 'Total orders', value: orders.length, key: 'all', interactive: true },
+                { label: 'Awaiting payment', value: stats.created || 0, key: 'created', interactive: true },
+                { label: 'Paid', value: stats.paid || 0, key: 'paid', interactive: true },
+                { label: 'Fulfilled', value: stats.fulfilled || 0, key: 'fulfilled', interactive: true },
+                { label: 'Shipped', value: stats.shipped || 0, key: 'shipped', interactive: true },
+                { label: 'Delivered', value: stats.completed || 0, key: 'completed', interactive: true },
+                { label: 'Cancelled', value: stats.cancelled || 0, key: 'cancelled', interactive: true },
+                { label: 'Revenue', value: money(revenueCents), key: 'revenue', interactive: false }
+            ];
+            ordersSummaryEl.innerHTML = '';
+            summaryData.forEach(stat => {
+                const isActive = stat.key === activeFilter;
+                const attrs = { type: 'button' };
+                if (stat.interactive) {
+                    attrs['data-order-filter'] = stat.key;
+                    attrs['aria-pressed'] = isActive ? 'true' : 'false';
+                } else {
+                    attrs.disabled = 'true';
+                }
+                ordersSummaryEl.appendChild(
+                    el('button', { class: 'admin-orders-summary-card' + (isActive && stat.interactive ? ' active' : ''), attrs },
+                        el('span', { class: 'admin-orders-summary-label tiny muted' }, stat.label),
+                        el('span', { class: 'admin-orders-summary-value' }, stat.value)
+                    )
+                );
+            });
+            if (!ordersSummaryEl._wired) {
+                ordersSummaryEl._wired = true;
+                ordersSummaryEl.addEventListener('click', (e) => {
+                    const btn = e.target.closest('[data-order-filter]');
+                    if (!btn) return;
+                    const nextFilter = btn.getAttribute('data-order-filter') || 'all';
+                    if (state.admin.ordersFilter === nextFilter) return;
+                    state.admin.ordersFilter = nextFilter;
+                    refreshAdminTables();
+                });
+            }
+        }
+
+        if (ot) {
+            const buildItemCard = (item) => {
+                const product = lookupProduct(item?.productId);
+                const title = item?.titleSnapshot || product?.title || 'Product';
+                const qty = item?.quantity || 1;
+                const unitPrice = item?.unitPriceCents != null ? item.unitPriceCents : (product?.priceCents || 0);
+                const imgSrc = resolveItemImage(item);
+                return el('div', { class: 'admin-order-item' },
+                    el('div', { class: 'admin-order-item-thumb' },
+                        el('img', { attrs: { src: imgSrc, alt: title } })
+                    ),
+                    el('div', { class: 'admin-order-item-info' },
+                        el('span', { class: 'admin-order-item-title' }, title),
+                        el('span', { class: 'admin-order-item-meta tiny muted' }, `${qty}× ${money(unitPrice, { showBase: false })}`)
+                    )
+                );
+            };
+
+            const filteredOrders = activeFilter === 'all'
+                ? orders
+                : orders.filter(o => (o.status || 'created').toLowerCase() === activeFilter);
+            ot.innerHTML = '';
+            if (!filteredOrders.length) {
+                const labelMap = {
+                    created: 'awaiting payment',
+                    paid: 'paid',
+                    fulfilled: 'fulfilled',
+                    shipped: 'shipped',
+                    completed: 'delivered',
+                    cancelled: 'cancelled'
+                };
+                const activeLabel = activeFilter === 'all' ? 'orders' : `${labelMap[activeFilter] || activeFilter} orders`;
+                const emptyMsg = activeFilter === 'all'
+                    ? 'No orders yet. Your latest orders will appear here.'
+                    : `No ${activeLabel} right now.`;
+                ot.appendChild(el('div', { class: 'admin-orders-empty muted' }, emptyMsg));
+            } else {
+                const frag = document.createDocumentFragment();
+                filteredOrders.forEach(o => {
+                    const items = Array.isArray(o.items) ? o.items : [];
+                    const itemsGallery = el('div', { class: 'admin-order-items-grid' },
+                        ...(items.length ? items.map(i => buildItemCard(i)) : [
+                            el('div', { class: 'admin-order-item admin-order-item--empty muted tiny' }, 'Line items will appear once available.')
+                        ])
+                    );
+                    const tsParts = [];
+                    if (o.paidAt) tsParts.push('Paid ' + new Date(o.paidAt).toLocaleString());
+                    if (o.fulfilledAt) tsParts.push('Fulfilled ' + new Date(o.fulfilledAt).toLocaleString());
+                    if (o.shippedAt) tsParts.push('Shipped ' + new Date(o.shippedAt).toLocaleString());
+                    if (o.completedAt) tsParts.push('Delivered ' + new Date(o.completedAt).toLocaleString());
+                    if (o.cancelledAt) tsParts.push('Cancelled ' + new Date(o.cancelledAt).toLocaleString());
+                    const codesLabel = [o.discountCode, o.shippingCode].filter(Boolean).join(' · ');
+
+                    const metaCard = (label, value) => el('div', { class: 'admin-order-meta-card' },
+                        el('span', { class: 'tiny muted' }, label),
+                        el('span', { class: 'admin-order-meta-value' }, value)
+                    );
+
+                    const metaGrid = el('div', { class: 'admin-order-meta-grid' },
+                        metaCard('Total', money(o.totalCents)),
+                        metaCard('Subtotal', money(o.subtotalCents)),
+                        metaCard('Shipping', money(o.shippingCents || 0)),
+                        metaCard('Discounts', (o.discountCents || o.shippingDiscountCents)
+                            ? '-' + money((o.discountCents || 0) + (o.shippingDiscountCents || 0))
+                            : '—'),
+                        metaCard('Codes', codesLabel || '—'),
+                        metaCard('Updated', tsParts[0] || new Date(o.createdAt).toLocaleString())
+                    );
+
+                    const orderIdString = o.id || '';
+                    const copyIcon = () => el('svg', {
+                        class: 'admin-order-copy-icon',
+                        attrs: {
+                            viewBox: '0 0 24 24',
+                            role: 'img',
+                            'aria-label': 'Copy order ID'
+                        }
+                    },
+                        el('path', {
+                            attrs: {
+                                d: 'M9 8h8a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H9a3 3 0 0 1-3-3v-8a3 3 0 0 1 3-3z',
+                                fill: 'none',
+                                stroke: 'currentColor',
+                                'stroke-width': '1.8',
+                                'stroke-linejoin': 'round'
+                            }
+                        }),
+                        el('path', {
+                            attrs: {
+                                d: 'M6 15H5a3 3 0 0 1-3-3V4a3 3 0 0 1 3-3h9a3 3 0 0 1 3 3v1',
+                                fill: 'none',
+                                stroke: 'currentColor',
+                                'stroke-width': '1.8',
+                                'stroke-linecap': 'round',
+                                'stroke-linejoin': 'round'
+                            }
+                        })
+                    );
+                    const card = el('article', { class: 'admin-order-card', attrs: { 'data-order-id': o.id } },
+                        el('div', { class: 'admin-order-head' },
+                            el('div', { class: 'admin-order-id-block' },
+                                el('span', { class: 'tiny muted' }, 'Order'),
+                                el('div', { class: 'admin-order-id-row' },
+                                    el('span', { class: 'admin-order-id' }, orderIdString || '—'),
+                                    orderIdString ? el('button', {
+                                        class: 'admin-order-copy-btn',
+                                        attrs: {
+                                            type: 'button',
+                                            'data-copy-order': orderIdString,
+                                            'aria-label': 'Copy order ID'
+                                        }
+                                    }, copyIcon()) : null
+                                )
+                            ),
+                            el('div', { class: 'admin-order-head-actions' },
+                                el('button', { class: 'btn btn-xs btn-outline', attrs: { 'data-order-timeline': o.id } }, 'Timeline')
+                            )
+                        ),
+                        el('div', { class: 'admin-order-details' },
+                            el('div', { class: 'admin-order-detail-column' },
+                                    el('span', { class: 'admin-order-section-title tiny muted' }, 'Customer'),
+                                    (function () {
+                                        const attrs = {
+                                            type: 'button',
+                                            'data-customer-inspect': (o.customerEmail || '').toLowerCase() || '',
+                                            'data-customer-email': o.customerEmail || '',
+                                            'data-customer-name': o.customerName || '',
+                                            'data-customer-order': o.id || ''
+                                        };
+                                        if (!attrs['data-customer-inspect']) delete attrs['data-customer-inspect'];
+                                        const btn = el('button', { class: 'admin-order-customer-btn', attrs },
+                                            el('span', { class: 'admin-order-customer-name' }, o.customerName || o.customerEmail || '—'),
+                                            o.customerEmail ? el('span', { class: 'admin-order-customer-email tiny muted' }, o.customerEmail) : null
+                                        );
+                                        return btn;
+                                    })()
+                                ),
+                            el('div', { class: 'admin-order-detail-column' },
+                                el('span', { class: 'admin-order-section-title tiny muted' }, 'Timeline'),
+                                el('span', { class: 'admin-order-timestamps' }, tsParts.join(' · ') || new Date(o.createdAt).toLocaleString())
+                            )
+                        ),
+                        el('div', { class: 'admin-order-section' },
+                            el('span', { class: 'admin-order-section-title tiny muted' }, 'Items'),
+                            itemsGallery
+                        ),
+                        metaGrid,
+                        el('div', { class: 'admin-order-section admin-order-actions' },
+                            el('span', { class: 'admin-order-section-title tiny muted' }, 'Actions'),
+                            (function () {
+                                const actionsWrap = el('div', { class: 'admin-order-actions-wrap' });
+                                actionsWrap.appendChild(buildOrderActions(o, { includeTimeline: false }));
+                                return actionsWrap;
+                            })()
+                        )
+                    );
+                    frag.appendChild(card);
+                });
+                ot.appendChild(frag);
+            }
+
             if (!ot._wired) {
                 ot._wired = true;
                 ot.addEventListener('click', async (e) => {
+                    const copyBtn = e.target.closest('[data-copy-order]');
+                    if (copyBtn) {
+                        const value = copyBtn.getAttribute('data-copy-order');
+                        if (value) {
+                            try {
+                                await copyTextToClipboard(value);
+                                notify('Order ID copied', 'success', 1600);
+                            } catch (err) {
+                                notify('Unable to copy ID', 'error', 2000);
+                            }
+                        }
+                        return;
+                    }
+                    const customerBtn = e.target.closest('[data-customer-inspect], [data-customer-name][data-customer-order]');
+                    if (customerBtn) {
+                        const info = {
+                            email: customerBtn.getAttribute('data-customer-inspect') || customerBtn.getAttribute('data-customer-email') || '',
+                            name: customerBtn.getAttribute('data-customer-name') || '',
+                            orderId: customerBtn.getAttribute('data-customer-order') || ''
+                        };
+                        showCustomerProfile(info);
+                        return;
+                    }
                     const tBtn = e.target.closest('[data-order-timeline]'); if (tBtn) { showOrderTimeline(tBtn.getAttribute('data-order-timeline')); return; }
                     const btn = e.target.closest('[data-order-action]'); if (!btn) return; const action = btn.getAttribute('data-order-action'); const id = btn.getAttribute('data-order-id');
                     try {
@@ -4992,13 +6218,242 @@
                         else if (action === 'complete') {
                             const email = btn.getAttribute('data-order-email') || '';
                             await completeOrder(id, email);
-                        } else if (action === 'cancel') { if (!confirm('Cancel order?')) return; await cancelOrder(id); }
+                        } else if (action === 'cancel') {
+                            const orders = getAdminOrders();
+                            const order = orders.find(o => String(o.id) === String(id));
+                            const reason = await promptOrderCancellation(order);
+                            if (!reason) return;
+                            await cancelOrder(id, reason);
+                        }
                         notify('Order ' + action + ' ok', 'success');
                         await loadOrdersAdmin();
                         refreshAdminTables();
                     } catch (err) { notify('Action failed: ' + err.message, 'error'); }
                 });
-                const refreshBtn = document.getElementById('orders-refresh-btn'); if (refreshBtn) refreshBtn.addEventListener('click', async () => { await loadOrdersAdmin(); refreshAdminTables(); });
+                const refreshBtn = document.getElementById('orders-refresh-btn');
+                if (refreshBtn && !refreshBtn._wired) {
+                    refreshBtn._wired = true;
+                    refreshBtn.addEventListener('click', async () => { await loadOrdersAdmin(); refreshAdminTables(); });
+                }
+            }
+        }
+
+        const refundsSummaryEl = document.getElementById('admin-refunds-summary');
+        const refundsListEl = document.getElementById('admin-refunds-list');
+        if (refundsSummaryEl || refundsListEl) {
+            const refundOrders = orders.filter(order => order.returnRequestedAt);
+            if (refundsSummaryEl) {
+                const counts = { pending: 0, in_review: 0, approved: 0, refunded: 0, declined: 0 };
+                let responseAccumulator = 0;
+                let responseCount = 0;
+                refundOrders.forEach(order => {
+                    const key = getRefundStatus(order.returnAdminStatus);
+                    counts[key] = (counts[key] || 0) + 1;
+                    if (order.returnAdminRespondedAt && order.returnRequestedAt) {
+                        responseAccumulator += (new Date(order.returnAdminRespondedAt).getTime() - new Date(order.returnRequestedAt).getTime());
+                        responseCount += 1;
+                    }
+                });
+                const openCount = counts.pending + counts.in_review;
+                const resolvedCount = counts.approved + counts.refunded + counts.declined;
+                const avgHours = responseCount ? Math.max(1, Math.round(responseAccumulator / responseCount / (1000 * 60 * 60))) : null;
+                const summaryCards = [
+                    { label: 'Open', value: openCount },
+                    { label: 'Resolved', value: resolvedCount },
+                    { label: 'Total', value: refundOrders.length },
+                    { label: 'Avg response', value: avgHours ? `${avgHours}h` : '—' }
+                ];
+                refundsSummaryEl.innerHTML = '';
+                summaryCards.forEach(card => {
+                    refundsSummaryEl.appendChild(el('div', { class: 'admin-refunds-summary-card' },
+                        el('span', { class: 'tiny muted' }, card.label),
+                        el('span', { class: 'admin-refunds-summary-value' }, card.value)
+                    ));
+                });
+            }
+            if (refundsListEl) {
+                refundsListEl.innerHTML = '';
+                if (!refundOrders.length) {
+                    refundsListEl.appendChild(el('div', { class: 'admin-refunds-empty muted' }, 'No refund requests yet.'));
+                } else {
+                    refundOrders.forEach(order => {
+                        const items = Array.isArray(order.items) ? order.items : [];
+                        const heroItem = items[0];
+                        const heroImg = resolveItemImage(heroItem);
+                        const extraItems = Math.max(0, items.length - 1);
+                        const statusKey = getRefundStatus(order.returnAdminStatus);
+                        const usageCopy = describeRefundUsage(order);
+                        const reasonText = order.returnReason || 'Customer did not provide an explanation.';
+                        const card = el('article', { class: 'admin-refund-card', attrs: { 'data-refund-order': order.id || '' } },
+                            el('div', { class: 'admin-refund-card-head' },
+                                el('div', { class: 'admin-refund-identity' },
+                                    el('div', { class: 'admin-refund-thumb' },
+                                        el('img', { attrs: { src: heroImg, alt: heroItem?.titleSnapshot || 'Product preview' } }),
+                                        extraItems > 0 ? el('span', { class: 'admin-refund-thumb-count tiny' }, `+${extraItems}`) : null
+                                    ),
+                                    el('div', { class: 'admin-refund-basics' },
+                                        el('span', { class: 'admin-refund-order-id' }, order.id || '—'),
+                                        el('span', { class: 'admin-refund-customer tiny muted' }, order.customerName || order.customerEmail || 'Unknown customer')
+                                    )
+                                ),
+                                el('span', { class: 'admin-refund-status-chip status-' + statusKey }, formatRefundStatus(statusKey))
+                            ),
+                            el('div', { class: 'admin-refund-overview' },
+                                el('div', { class: 'admin-refund-overview-block' },
+                                    el('span', { class: 'tiny muted' }, 'Requested'),
+                                    el('span', { class: 'admin-refund-overview-value' }, order.returnRequestedAt ? new Date(order.returnRequestedAt).toLocaleString() : '—')
+                                ),
+                                el('div', { class: 'admin-refund-overview-block' },
+                                    el('span', { class: 'tiny muted' }, 'Usage window'),
+                                    el('span', { class: 'admin-refund-overview-value' }, usageCopy)
+                                )
+                            ),
+                            el('div', { class: 'admin-refund-reason' },
+                                el('span', { class: 'tiny muted' }, 'Customer explanation'),
+                                el('p', {}, reasonText)
+                            ),
+                            order.returnAdminNotes ? el('div', { class: 'admin-refund-notes tiny muted' }, 'Internal notes: ', order.returnAdminNotes) : null,
+                            order.returnUsageNotes ? el('div', { class: 'admin-refund-notes tiny muted' }, 'Usage notes: ', order.returnUsageNotes) : null,
+                            el('div', { class: 'admin-refund-actions' },
+                                el('button', { class: 'btn btn-xs btn-outline', attrs: { type: 'button', 'data-refund-toggle': order.id || '', 'aria-expanded': 'false' } }, 'Open conversation'),
+                                el('button', { class: 'btn btn-xs btn-ghost', attrs: { type: 'button', 'data-refund-scroll-order': order.id || '' } }, 'View order card')
+                            ),
+                            el('div', { class: 'admin-refund-detail hidden', attrs: { 'data-refund-detail': order.id || '' } },
+                                el('div', { class: 'admin-refund-timeline' },
+                                    el('div', { class: 'admin-refund-timeline-row' },
+                                        el('span', { class: 'tiny muted' }, 'Delivered'),
+                                        el('span', {}, order.completedAt ? new Date(order.completedAt).toLocaleString() : '—')
+                                    ),
+                                    el('div', { class: 'admin-refund-timeline-row' },
+                                        el('span', { class: 'tiny muted' }, 'Refund requested'),
+                                        el('span', {}, order.returnRequestedAt ? new Date(order.returnRequestedAt).toLocaleString() : '—')
+                                    ),
+                                    el('div', { class: 'admin-refund-timeline-row' },
+                                        el('span', { class: 'tiny muted' }, 'Last admin reply'),
+                                        el('span', {}, order.returnAdminRespondedAt ? new Date(order.returnAdminRespondedAt).toLocaleString() : '—')
+                                    )
+                                ),
+                                el('div', { class: 'admin-refund-thread' },
+                                    el('div', { class: 'admin-refund-thread-messages', attrs: { 'data-refund-messages': order.id || '' } },
+                                        el('p', { class: 'tiny muted' }, 'Conversation loads when opened.')
+                                    ),
+                                    el('form', { class: 'admin-refund-reply', attrs: { 'data-refund-form': order.id || '' } },
+                                        el('label', {},
+                                            el('span', { class: 'tiny muted' }, 'Status'),
+                                            el('select', { attrs: { name: 'refund-status' } },
+                                                Object.entries(REFUND_STATUS_LABELS).map(([value, label]) => el('option', { attrs: { value, selected: value === statusKey ? 'true' : null } }, label))
+                                            )
+                                        ),
+                                        el('label', {},
+                                            el('span', { class: 'tiny muted' }, 'Usage notes (internal)'),
+                                            el('input', { attrs: { type: 'text', name: 'refund-usage', value: order.returnUsageNotes || '', placeholder: 'Ex: Signs of wear on collar' } })
+                                        ),
+                                        el('label', {},
+                                            el('span', { class: 'tiny muted' }, 'Internal notes'),
+                                            el('textarea', { attrs: { name: 'refund-notes', rows: '2', placeholder: 'Visible defects, next steps…' } }, order.returnAdminNotes || '')
+                                        ),
+                                        el('label', {},
+                                            el('span', { class: 'tiny muted' }, 'Reply to customer'),
+                                            el('textarea', { attrs: { name: 'refund-message', rows: '3', placeholder: 'Share updates or next steps (optional)' } })
+                                        ),
+                                        el('div', { class: 'admin-refund-reply-actions' },
+                                            el('button', { class: 'btn btn-xs', attrs: { type: 'submit' } }, 'Update & send')
+                                        )
+                                    )
+                                )
+                            )
+                        );
+                        refundsListEl.appendChild(card);
+                    });
+                }
+                if (!refundsListEl._wired) {
+                    refundsListEl._wired = true;
+                    refundsListEl.addEventListener('click', async (event) => {
+                        const toggleBtn = event.target.closest('[data-refund-toggle]');
+                        if (toggleBtn) {
+                            const orderId = toggleBtn.getAttribute('data-refund-toggle');
+                            const detail = refundsListEl.querySelector(`[data-refund-detail="${CSS.escape(orderId)}"]`);
+                            if (!detail) return;
+                            const nowHidden = detail.classList.toggle('hidden');
+                            toggleBtn.setAttribute('aria-expanded', nowHidden ? 'false' : 'true');
+                            if (!nowHidden) {
+                                const container = detail.querySelector(`[data-refund-messages="${CSS.escape(orderId)}"]`);
+                                if (container) container.innerHTML = '<p class="tiny muted">Loading conversation…</p>';
+                                try {
+                                    const hasCache = state.admin.refundThreads?.has(orderId);
+                                    await loadRefundMessages(orderId, { force: !hasCache });
+                                    renderRefundMessagesThread(orderId);
+                                } catch (err) {
+                                    const msg = err?.message?.includes('HTTP 404')
+                                        ? 'Refund conversation endpoint not available on the server yet. Restart or redeploy the backend to pick up the latest routes.'
+                                        : err?.message || 'Unknown error';
+                                    if (container) container.innerHTML = '<p class="tiny alert">Unable to load thread: ' + msg + '</p>';
+                                    console.warn('[refund-thread] load failed for', orderId, err);
+                                }
+                            }
+                            return;
+                        }
+                        const viewBtn = event.target.closest('[data-refund-scroll-order]');
+                        if (viewBtn) {
+                            const orderId = viewBtn.getAttribute('data-refund-scroll-order');
+                            if (orderId) {
+                                const card = document.querySelector(`.admin-order-card[data-order-id="${CSS.escape(orderId)}"]`);
+                                if (card) {
+                                    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                    card.classList.add('admin-order-card--highlight');
+                                    setTimeout(() => card.classList.remove('admin-order-card--highlight'), 2000);
+                                } else {
+                                    notify('Order card not visible in current filter.', 'warn');
+                                }
+                            }
+                        }
+                    });
+                    refundsListEl.addEventListener('submit', async (event) => {
+                        const form = event.target.closest('[data-refund-form]');
+                        if (!form) return;
+                        event.preventDefault();
+                        const orderId = form.getAttribute('data-refund-form');
+                        if (!orderId) return;
+                        const status = form.querySelector('select[name="refund-status"]').value;
+                        const usageNotes = form.querySelector('input[name="refund-usage"]').value;
+                        const notes = form.querySelector('textarea[name="refund-notes"]').value;
+                        const message = form.querySelector('textarea[name="refund-message"]').value;
+                        const submitBtn = form.querySelector('button[type="submit"]');
+                        submitBtn.disabled = true;
+                        try {
+                            const result = await respondToRefund(orderId, { status, usageNotes, notes, message });
+                            form.querySelector('textarea[name="refund-notes"]').value = result.notes || '';
+                            const msgBox = form.querySelector('textarea[name="refund-message"]');
+                            if (message.trim()) msgBox.value = '';
+                            const order = orders.find(o => String(o.id) === String(orderId));
+                            if (order) {
+                                order.returnAdminStatus = result.status;
+                                order.returnAdminNotes = result.notes;
+                                order.returnAdminRespondedAt = result.respondedAt;
+                                order.returnUsageNotes = result.usageNotes;
+                            }
+                            renderRefundMessagesThread(orderId);
+                            refreshAdminTables();
+                            notify('Refund updated', 'success', 2000);
+                        } catch (err) {
+                            const msg = err?.message?.includes('HTTP 404')
+                                ? 'HTTP 404 (route missing). Restart or redeploy the server so /api/orders/:id/refund-response is available, then refresh admin data.'
+                                : err?.message || 'Unknown error';
+                            notify('Unable to update refund: ' + msg, 'error');
+                            console.warn('[refund-response] failed for', orderId, err);
+                        } finally {
+                            submitBtn.disabled = false;
+                        }
+                    });
+                }
+            }
+            const refundsRefreshBtn = document.getElementById('refunds-refresh-btn');
+            if (refundsRefreshBtn && !refundsRefreshBtn._wired) {
+                refundsRefreshBtn._wired = true;
+                refundsRefreshBtn.addEventListener('click', async () => {
+                    await loadOrdersAdmin();
+                    refreshAdminTables();
+                });
             }
         }
         refreshAdminReviewsTable();
@@ -5331,33 +6786,399 @@
 
     // Order timeline modal
     function showOrderTimeline(orderId) {
+        const orders = getAdminOrders();
+        const order = orders.find(o => String(o.id) === String(orderId));
+        const summaryBits = order ? [
+            { label: 'Status', value: (order.status || 'Unknown').replace(/_/g, ' ') },
+            { label: 'Customer', value: order.customerName || order.customerEmail || '—' },
+            { label: 'Total', value: money(order.totalCents || 0) },
+            { label: 'Updated', value: order.updatedAt ? new Date(order.updatedAt).toLocaleString() : new Date(order.createdAt).toLocaleString() }
+        ] : [];
+        const timelineStages = order ? [
+            { label: 'Created', at: order.createdAt },
+            { label: 'Paid', at: order.paidAt },
+            { label: 'Fulfilled', at: order.fulfilledAt },
+            { label: 'Shipped', at: order.shippedAt },
+            { label: 'Delivered', at: order.completedAt },
+            { label: 'Cancelled', at: order.cancelledAt }
+        ].filter(stage => stage.at) : [];
         showModal(async close => {
-            const wrap = el('div', { class: 'modal' });
+            const wrap = el('div', { class: 'modal order-timeline-modal' });
             wrap.appendChild(el('button', { class: 'modal-close' }, '×'));
             wrap.appendChild(el('h2', {}, 'Order Timeline'));
-            const list = el('ul', { class: 'timeline', attrs: { id: 'timeline-list' } }, el('li', {}, 'Loading events...'));
-            wrap.appendChild(list); modalRoot.appendChild(wrap);
+            const subtitle = el('p', { class: 'tiny muted' }, order ? `Order ${order.id}` : 'Order details not found in cache.');
+            wrap.appendChild(subtitle);
+            if (summaryBits.length) {
+                const summaryGrid = el('div', { class: 'order-timeline-summary' },
+                    ...summaryBits.map(bit => el('div', { class: 'order-timeline-summary-item' },
+                        el('span', { class: 'order-timeline-summary-label' }, bit.label),
+                        el('span', { class: 'order-timeline-summary-value' }, bit.value)
+                    ))
+                );
+                wrap.appendChild(summaryGrid);
+            }
+            if (timelineStages.length) {
+                wrap.appendChild(el('div', { class: 'order-timeline-stages' },
+                    el('span', { class: 'tiny muted order-timeline-stages-label' }, 'Key milestones'),
+                    ...timelineStages.map(stage => el('div', { class: 'order-timeline-stage tiny' },
+                        el('span', { class: 'order-timeline-stage-label' }, stage.label),
+                        el('span', { class: 'order-timeline-stage-date' }, new Date(stage.at).toLocaleString())
+                    ))
+                ));
+            }
+            const eventsList = el('ol', { class: 'order-timeline-events' },
+                el('li', { class: 'order-timeline-loading tiny muted' }, 'Loading event history...')
+            );
+            wrap.appendChild(el('div', { class: 'order-timeline-events-wrap' },
+                el('span', { class: 'tiny muted order-timeline-events-label' }, 'Event history'),
+                eventsList
+            ));
+            modalRoot.appendChild(wrap);
             wrap.querySelector('.modal-close').addEventListener('click', close);
             try {
                 const data = await apiFetch('/api/orders/' + orderId + '/events');
-                list.innerHTML = '';
-                data.events.forEach(ev => list.appendChild(el('li', {}, el('strong', {}, ev.status), ' – ', new Date(ev.at).toLocaleString())));
-            } catch (err) { list.innerHTML = ''; list.appendChild(el('li', { class: 'alert alert-error' }, 'Failed: ' + err.message)); }
+                const events = Array.isArray(data?.events) ? data.events.slice() : [];
+                events.sort((a, b) => {
+                    const aTime = new Date(a.at || 0).getTime();
+                    const bTime = new Date(b.at || 0).getTime();
+                    return aTime - bTime;
+                });
+                eventsList.innerHTML = '';
+                if (!events.length) {
+                    eventsList.appendChild(el('li', { class: 'order-timeline-empty tiny muted' }, 'No events yet.'));
+                } else {
+                    events.forEach(ev => {
+                        const status = typeof ev.status === 'string' ? ev.status.replace(/_/g, ' ') : 'Event';
+                        const timestamp = ev.at ? new Date(ev.at).toLocaleString() : '—';
+                        const note = ev.note || ev.notes || ev.message || '';
+                        const actor = ev.actor || ev.user || '';
+                        eventsList.appendChild(el('li', { class: 'order-timeline-event' },
+                            el('div', { class: 'order-timeline-event-head' },
+                                el('span', { class: 'order-timeline-event-status' }, status),
+                                el('span', { class: 'order-timeline-event-date tiny muted' }, timestamp)
+                            ),
+                            note ? el('p', { class: 'order-timeline-event-note tiny' }, note) : null,
+                            actor ? el('p', { class: 'order-timeline-event-actor tiny muted' }, 'By ' + actor) : null
+                        ));
+                    });
+                }
+            } catch (err) {
+                eventsList.innerHTML = '';
+                eventsList.appendChild(el('li', { class: 'order-timeline-error tiny' }, 'Unable to load events: ' + err.message));
+            }
+        });
+    }
+
+    function showCustomerProfile(info = {}) {
+        const orders = getAdminOrders();
+        const emailKey = (info.email || '').trim().toLowerCase();
+        const nameKey = (info.name || '').trim().toLowerCase();
+        const matches = orders.filter(order => {
+            const orderEmail = (order.customerEmail || '').trim().toLowerCase();
+            if (emailKey && orderEmail) return orderEmail === emailKey;
+            if (!emailKey && nameKey) {
+                const orderName = (order.customerName || '').trim().toLowerCase();
+                if (orderName) return orderName === nameKey;
+            }
+            return false;
+        });
+        let matchedOrders = matches;
+        if (!matchedOrders.length && info.orderId) {
+            const fallbackOrder = orders.find(o => String(o.id) === String(info.orderId));
+            if (fallbackOrder) matchedOrders = [fallbackOrder];
+        }
+
+        const profileOrder = matchedOrders[0];
+        const customerName = profileOrder?.customerName || info.name || 'Customer';
+        const customerEmail = profileOrder?.customerEmail || info.email || '';
+
+        const totals = matchedOrders.reduce((acc, order) => {
+            const total = Number.isFinite(order.totalCents) ? order.totalCents : 0;
+            const created = order.createdAt ? new Date(order.createdAt).getTime() : null;
+            if (created != null && !Number.isNaN(created)) {
+                acc.first = acc.first == null ? created : Math.min(acc.first, created);
+                acc.last = acc.last == null ? created : Math.max(acc.last, created);
+            }
+            acc.spend += total;
+            acc.count += 1;
+            return acc;
+        }, { spend: 0, count: 0, first: null, last: null });
+
+        const recentOrders = matchedOrders
+            .slice()
+            .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
+            .slice(0, 5);
+
+        const rawProductMap = state.productsById instanceof Map ? state.productsById : new Map();
+        const lookupProduct = (id) => {
+            if (id == null) return null;
+            if (rawProductMap.has(id)) return rawProductMap.get(id);
+            const str = String(id);
+            if (rawProductMap.has(str)) return rawProductMap.get(str);
+            const num = Number(id);
+            if (!Number.isNaN(num) && rawProductMap.has(num)) return rawProductMap.get(num);
+            return null;
+        };
+        const resolveItemImage = (item) => {
+            if (!item) return productPlaceholder(360);
+            const candidate = item.image || item.thumbnail || (Array.isArray(item.images) && item.images[0]) || item.imageUrl;
+            if (candidate) return candidate;
+            const product = lookupProduct(item.productId);
+            const productImages = product?.images;
+            if (Array.isArray(productImages) && productImages[0]) return productImages[0];
+            if (typeof productImages === 'string') return productImages;
+            if (typeof product?.image === 'string') return product.image;
+            return productPlaceholder(360);
+        };
+        const productStatsMap = new Map();
+        matchedOrders.forEach(order => {
+            const items = Array.isArray(order.items) ? order.items : [];
+            const orderTimestamp = order.createdAt ? new Date(order.createdAt).getTime() : 0;
+            items.forEach(item => {
+                const qty = typeof item.quantity === 'number' ? item.quantity : (item.qty || 1);
+                const price = Number.isFinite(item.unitPriceCents) ? item.unitPriceCents : 0;
+                const productKey = item.productId || item.id || item.sku || item.title || 'unknown';
+                if (!productStatsMap.has(productKey)) {
+                    const product = lookupProduct(item.productId);
+                    productStatsMap.set(productKey, {
+                        key: productKey,
+                        title: item.titleSnapshot || item.title || product?.title || `Product ${productKey}`,
+                        qty: 0,
+                        spend: 0,
+                        image: resolveItemImage(item),
+                        lastOrderedAt: orderTimestamp
+                    });
+                }
+                const entry = productStatsMap.get(productKey);
+                entry.qty += qty || 1;
+                entry.spend += (qty || 1) * price;
+                if (orderTimestamp) entry.lastOrderedAt = Math.max(entry.lastOrderedAt || 0, orderTimestamp);
+                if (!entry.image) entry.image = resolveItemImage(item);
+            });
+        });
+        const topProducts = Array.from(productStatsMap.values())
+            .sort((a, b) => (b.qty - a.qty) || ((b.lastOrderedAt || 0) - (a.lastOrderedAt || 0)))
+            .slice(0, 3);
+
+        showModal(close => {
+            const wrap = el('div', { class: 'modal customer-profile-modal' });
+            wrap.appendChild(el('button', { class: 'modal-close', attrs: { 'aria-label': 'Close' } }, '×'));
+            wrap.appendChild(el('h2', {}, 'Customer profile'));
+            wrap.appendChild(el('p', { class: 'tiny muted' }, customerEmail ? `${customerName} · ${customerEmail}` : customerName));
+            const body = el('div', { class: 'customer-profile-body' });
+            wrap.appendChild(body);
+
+            if (!matchedOrders.length) {
+                body.appendChild(el('p', { class: 'alert alert-info' }, 'No additional orders found for this customer.')); 
+            } else {
+                const summaryGrid = el('div', { class: 'customer-profile-summary' },
+                    el('div', { class: 'customer-profile-tile' },
+                        el('span', { class: 'customer-profile-label tiny muted' }, 'Total orders'),
+                        el('span', { class: 'customer-profile-value' }, String(totals.count))
+                    ),
+                    el('div', { class: 'customer-profile-tile' },
+                        el('span', { class: 'customer-profile-label tiny muted' }, 'Total spent'),
+                        el('span', { class: 'customer-profile-value' }, money(totals.spend))
+                    ),
+                    el('div', { class: 'customer-profile-tile' },
+                        el('span', { class: 'customer-profile-label tiny muted' }, 'First order'),
+                        el('span', { class: 'customer-profile-value' }, totals.first ? new Date(totals.first).toLocaleString() : '—')
+                    ),
+                    el('div', { class: 'customer-profile-tile' },
+                        el('span', { class: 'customer-profile-label tiny muted' }, 'Last order'),
+                        el('span', { class: 'customer-profile-value' }, totals.last ? new Date(totals.last).toLocaleString() : '—')
+                    )
+                );
+                body.appendChild(summaryGrid);
+
+                const panels = el('div', { class: 'customer-profile-panels' });
+
+                if (topProducts.length) {
+                    panels.appendChild(el('div', { class: 'customer-profile-section customer-profile-panel' },
+                        el('span', { class: 'customer-profile-section-title tiny muted' }, 'Most purchased items'),
+                        el('ul', { class: 'customer-profile-products' },
+                            ...topProducts.map(product => {
+                                const lastPurchase = product.lastOrderedAt
+                                    ? new Date(product.lastOrderedAt).toLocaleDateString()
+                                    : null;
+                                return el('li', { class: 'customer-profile-product-card' },
+                                    el('div', { class: 'customer-profile-product-thumb' },
+                                        el('img', { attrs: { src: product.image, alt: product.title } })
+                                    ),
+                                    el('div', { class: 'customer-profile-product-info' },
+                                        el('span', { class: 'customer-profile-product-title' }, product.title),
+                                        el('span', { class: 'customer-profile-product-meta tiny muted' }, `${product.qty}× · ${money(product.spend)}`),
+                                        lastPurchase ? el('span', { class: 'customer-profile-product-note tiny' }, 'Last on ' + lastPurchase) : null
+                                    )
+                                );
+                            })
+                        )
+                    ));
+                }
+
+                const ordersSection = el('div', { class: 'customer-profile-section customer-profile-panel' },
+                    el('span', { class: 'customer-profile-section-title tiny muted' }, 'Recent orders'),
+                    recentOrders.length ? el('ul', { class: 'customer-profile-orders' },
+                        ...recentOrders.map(order => {
+                            const orderItems = Array.isArray(order.items) ? order.items : [];
+                            const heroItem = orderItems[0];
+                            const heroImage = resolveItemImage(heroItem);
+                            const extraCount = orderItems.length > 1 ? orderItems.length - 1 : 0;
+                            let linesPreview = orderItems.slice(0, 2)
+                                .map(item => item?.titleSnapshot || item?.title || 'Item')
+                                .filter(Boolean)
+                                .join(', ');
+                            if (extraCount > 0) linesPreview += ` +${extraCount} more`;
+                            if (!linesPreview) linesPreview = 'Line items will appear once available.';
+                            const statusLine = [
+                                order.status ? order.status.replace(/_/g, ' ') : 'unknown',
+                                order.createdAt ? new Date(order.createdAt).toLocaleString() : '—'
+                            ].filter(Boolean).join(' · ');
+                            return el('li', { class: 'customer-profile-order-card', attrs: { 'data-order-id': order.id || '' } },
+                                el('div', { class: 'customer-profile-order-thumb' },
+                                    el('img', { attrs: { src: heroImage, alt: heroItem?.title || 'Order preview' } }),
+                                    extraCount > 0 ? el('span', { class: 'customer-profile-order-thumb-count tiny' }, `+${extraCount}`) : null
+                                ),
+                                el('div', { class: 'customer-profile-order-details' },
+                                    el('div', { class: 'customer-profile-order-head' },
+                                        el('span', { class: 'customer-profile-order-id' }, order.id || '—'),
+                                        el('span', { class: 'customer-profile-order-total' }, money(order.totalCents || 0))
+                                    ),
+                                    el('div', { class: 'customer-profile-order-meta tiny muted' }, statusLine),
+                                    el('p', { class: 'customer-profile-order-items tiny muted' }, linesPreview),
+                                    el('div', { class: 'customer-profile-order-actions' },
+                                        el('button', { class: 'btn btn-xs btn-outline', attrs: { type: 'button', 'data-go-order': order.id || '' } }, 'View order'),
+                                        el('button', { class: 'btn btn-xs btn-danger', attrs: { type: 'button', 'data-refund-order': order.id || '' } }, 'Refund/Cancel')
+                                    )
+                                )
+                            );
+                        })
+                    ) : el('p', { class: 'tiny muted' }, 'No recent orders logged yet.')
+                );
+
+                panels.appendChild(ordersSection);
+                body.appendChild(panels);
+            }
+
+            modalRoot.appendChild(wrap);
+            wrap.querySelector('.modal-close').addEventListener('click', close);
+
+            wrap.addEventListener('click', async (event) => {
+                const goBtn = event.target.closest('[data-go-order]');
+                if (goBtn) {
+                    const orderId = goBtn.getAttribute('data-go-order');
+                    if (orderId) {
+                        close();
+                        requestAnimationFrame(() => {
+                            const card = document.querySelector(`.admin-order-card[data-order-id="${CSS.escape(orderId)}"]`);
+                            if (card) {
+                                card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                card.classList.add('admin-order-card--highlight');
+                                setTimeout(() => card.classList.remove('admin-order-card--highlight'), 2000);
+                            } else {
+                                notify('Order not visible in current list.', 'warn', 2200);
+                            }
+                        });
+                    }
+                    return;
+                }
+                const refundBtn = event.target.closest('[data-refund-order]');
+                if (refundBtn) {
+                    const orderId = refundBtn.getAttribute('data-refund-order');
+                    if (!orderId) return;
+                    const order = orders.find(o => String(o.id) === String(orderId));
+                    if (!order) {
+                        notify('Order not found for refund.', 'error');
+                        return;
+                    }
+                    try {
+                        const reason = await promptOrderCancellation(order);
+                        if (!reason) return;
+                        await cancelOrder(orderId, reason);
+                        notify('Order cancelled', 'success');
+                        close();
+                        await loadOrdersAdmin();
+                        refreshAdminTables();
+                    } catch (err) {
+                        notify('Unable to cancel order: ' + err.message, 'error');
+                    }
+                }
+            });
+        });
+    }
+
+    function promptOrderCancellation(order) {
+        return new Promise(resolve => {
+            showModal(close => {
+                const wrap = el('div', { class: 'modal cancel-order-modal' });
+                const orderLabel = order ? `Order ${order.id}` : 'This order';
+                wrap.appendChild(el('button', { class: 'modal-close', attrs: { 'aria-label': 'Close' } }, '×'));
+                wrap.appendChild(el('h2', {}, 'Cancel order?'));
+                wrap.appendChild(el('p', { class: 'small muted' }, `You are about to cancel ${orderLabel}. This will notify the customer and lock further fulfillment steps.`));
+                if (order) {
+                    const infoList = el('ul', { class: 'cancel-order-meta muted tiny' },
+                        order.customerName ? el('li', {}, 'Customer: ', order.customerName) : null,
+                        order.customerEmail ? el('li', {}, 'Email: ', order.customerEmail) : null,
+                        Number.isFinite(order.totalCents) ? el('li', {}, 'Total: ', money(order.totalCents)) : null
+                    );
+                    wrap.appendChild(infoList);
+                }
+                const reasonWrap = el('div', { class: 'cancel-order-reason hidden' },
+                    el('label', { class: 'tiny muted', attrs: { for: 'cancel-reason-input' } }, 'Reason for cancellation'),
+                    el('textarea', {
+                        class: 'cancel-order-reason-input',
+                        attrs: { id: 'cancel-reason-input', rows: '3', placeholder: 'Example: Payment timeout, stock issue, duplicated order' }
+                    }),
+                    el('p', { class: 'cancel-order-reason-hint tiny muted' }, 'This reason is stored alongside the order history for auditing.')
+                );
+                wrap.appendChild(reasonWrap);
+                const actions = el('div', { class: 'cancel-order-actions' });
+                const keepBtn = el('button', { class: 'btn btn-xs' }, 'No, keep order');
+                const confirmBtn = el('button', { class: 'btn btn-xs btn-danger' }, 'Yes, cancel order');
+                actions.appendChild(keepBtn);
+                actions.appendChild(confirmBtn);
+                wrap.appendChild(actions);
+                modalRoot.appendChild(wrap);
+                const textarea = reasonWrap.querySelector('textarea');
+                const closeAndResolve = (val) => { close(); resolve(val); };
+                keepBtn.addEventListener('click', () => closeAndResolve(null));
+                wrap.querySelector('.modal-close').addEventListener('click', () => closeAndResolve(null));
+                let reasonVisible = false;
+                confirmBtn.addEventListener('click', () => {
+                    if (!reasonVisible) {
+                        reasonVisible = true;
+                        reasonWrap.classList.remove('hidden');
+                        confirmBtn.textContent = 'Submit cancellation';
+                        textarea.focus();
+                        return;
+                    }
+                    const reason = textarea.value.trim();
+                    if (!reason) {
+                        textarea.classList.add('field-error');
+                        textarea.focus();
+                        return;
+                    }
+                    textarea.classList.remove('field-error');
+                    closeAndResolve(reason);
+                });
+            });
         });
     }
 
     // Inject timeline trigger into order actions builder
-    function buildOrderActions(o) {
+    function buildOrderActions(o, opts = {}) {
         const frag = document.createDocumentFragment();
+        const includeTimeline = opts.includeTimeline !== false;
         function act(label, action, disabled = false, extraAttrs = {}) {
             const attrs = Object.assign({ 'data-order-action': action, 'data-order-id': o.id }, extraAttrs);
             if (disabled) attrs.disabled = 'true';
             const b = el('button', { class: 'btn btn-xs' + (disabled ? ' btn-disabled' : ' btn-outline'), attrs }, label);
-            frag.appendChild(b); frag.appendChild(document.createTextNode(' '));
+            frag.appendChild(b);
         }
-        // Timeline button always first
-        const timelineBtn = el('button', { class: 'btn btn-xs btn-outline', attrs: { 'data-order-timeline': o.id } }, 'Timeline');
-        frag.appendChild(timelineBtn); frag.appendChild(document.createTextNode(' '));
+        if (includeTimeline) {
+            const timelineBtn = el('button', { class: 'btn btn-xs btn-outline', attrs: { 'data-order-timeline': o.id } }, 'Timeline');
+            frag.appendChild(timelineBtn);
+        }
         if (o.cancelledAt) { act('Cancelled', 'noop', true); return frag; }
         if (!o.paidAt) act('Pay', 'pay');
         if (o.paidAt && !o.fulfilledAt) act('Fulfill', 'fulfill');

@@ -12,16 +12,19 @@ ADMIN_TOKEN=
 PORT=3000
 "@ | Out-File -Encoding UTF8 .env
 
-# 3. Start
+# 3. Start (regular Node)
 npm start
 
-# If global `node` not on PATH, call portable:
+# 3b. Start with bundled portable Node (Windows)
+npm run server:portable
+# or manually, if you need to pass env vars inline:
 $env:ADMIN_TOKEN="changeme"; .\node-portable\node.exe .\server.js
 ```
 
 Open http://localhost:3000/ then hard refresh (Ctrl+F5) if assets cached.
 
 Important endpoints:
+
 - GET /api/health
 - GET /api/meta
 - GET /api/products
@@ -29,6 +32,7 @@ Important endpoints:
 Admin calls require header `X-Admin-Token: <token>` matching ADMIN_TOKEN.
 
 Troubleshooting:
+
 1. If 404 on /api/meta ensure server restarted after latest code (see console banner).
 2. If `better-sqlite3` load error, remove `node_modules` and reinstall with the SAME Node version, then `npm rebuild better-sqlite3` only if needed.
 3. Confirm DB file created at `data/shop.db`.

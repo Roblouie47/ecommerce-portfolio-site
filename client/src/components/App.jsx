@@ -1,344 +1,329 @@
-import React, { useMemo, useState } from 'react';
-import clsx from 'clsx';
-import { Search, Grid3x3, LayoutGrid, SlidersHorizontal } from 'lucide-react';
-import Filters from './catalog/Filters';
-import ProductCard from './catalog/ProductCard';
-import { Input } from './ui/input';
-import { Button } from './ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import React from 'react';
 
-const mockProducts = [
+const NAV_LINKS = [
+    { label: 'Home', href: '#home' },
+    { label: 'Catalog', href: '#catalog' },
+    { label: 'My Orders', href: '#orders' },
+    { label: 'Admin', href: '#admin' }
+];
+
+const HERO_STATS = [
+    { label: 'Catalog entries', value: '07+' },
+    { label: 'New this month', value: '07' },
+    { label: 'Community score', value: '5.0★' }
+];
+
+const HOME_PRODUCTS = [
     {
-        id: '1',
-        name: 'Modern Accent Chair',
-        category: 'Seating',
-        price: 299.99,
-        originalPrice: 399.99,
-        rating: 4.5,
-        reviews: 127,
-        image: 'https://images.unsplash.com/photo-1760716478137-d861d5b354e8?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjBmdXJuaXR1cmUlMjBjaGFpcnxlbnwxfHx8fDE3NjMwMzUzOTV8MA&ixlib=rb-4.1.0&q=80&w=1080',
-        inStock: true,
-        isNew: true,
-        isSale: true
-    },
-    {
-        id: '2',
-        name: 'Contemporary Desk Lamp',
-        category: 'Lighting',
-        price: 89.99,
-        rating: 4.8,
-        reviews: 89,
-        image: 'https://images.unsplash.com/photo-1621447980929-6638614633c8?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxkZXNrJTIwbGFtcCUyMGxpZ2h0fGVufDF8fHx8MTc2MzA0MDg5MHww&ixlib=rb-4.1.0&q=80&w=1080',
-        inStock: true,
-        isNew: true
-    },
-    {
-        id: '3',
-        name: 'Solid Wood Office Desk',
-        category: 'Tables',
-        price: 549.99,
-        originalPrice: 699.99,
-        rating: 4.6,
-        reviews: 203,
-        image: 'https://images.unsplash.com/photo-1637762646936-29b68cd6670d?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxvZmZpY2UlMjBkZXNrJTIwd29vZGVufGVufDF8fHx8MTc2MzA5MjkxMnww&ixlib=rb-4.1.0&q=80&w=1080',
-        inStock: true,
-        isSale: true
-    },
-    {
-        id: '4',
-        name: 'Industrial Bookshelf',
-        category: 'Storage',
-        price: 379.99,
-        rating: 4.4,
-        reviews: 156,
-        image: 'https://images.unsplash.com/photo-1587386263376-d2b58fdd86f9?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxib29rc2hlbGYlMjBzaGVsdmluZ3xlbnwxfHx8fDE3NjMwOTI5MTJ8MA&ixlib=rb-4.1.0&q=80&w=1080',
-        inStock: true
-    },
-    {
-        id: '5',
-        name: 'Velvet Lounge Sofa',
-        category: 'Seating',
-        price: 1299.99,
+        id: 'tee-01',
+        title: 'Essential Crew Tee',
+        price: 38,
+        stockLabel: 'In stock',
         rating: 4.9,
-        reviews: 342,
-        image: 'https://images.unsplash.com/photo-1748309025784-d16e142b1cb1?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxzb2ZhJTIwY291Y2glMjBsaXZpbmd8ZW58MXx8fHwxNzYzMDkyOTEyfDA&ixlib=rb-4.1.0&q=80&w=1080',
-        inStock: false
+        reviews: 287,
+        image: 'https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?auto=format&fit=crop&w=900&q=80',
+        highlight: 'best',
+        tags: ['Organic cotton', 'Best seller']
     },
     {
-        id: '6',
-        name: 'Round Coffee Table',
-        category: 'Tables',
-        price: 249.99,
-        originalPrice: 329.99,
-        rating: 4.3,
-        reviews: 98,
-        image: 'https://images.unsplash.com/photo-1642657547271-722df15ce6d6?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxjb2ZmZWUlMjB0YWJsZSUyMG1vZGVybnxlbnwxfHx8fDE3NjMwOTI1MTB8MA&ixlib=rb-4.1.0&q=80&w=1080',
-        inStock: true,
-        isSale: true
-    },
-    {
-        id: '7',
-        name: 'Handwoven Area Rug',
-        category: 'Textiles',
-        price: 189.99,
-        rating: 4.7,
-        reviews: 167,
-        image: 'https://images.unsplash.com/photo-1752568583323-92145f90e6a8?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxydWclMjBjYXJwZXQlMjBmbG9vcnxlbnwxfHx8fDE3NjMwOTI5MTN8MA&ixlib=rb-4.1.0&q=80&w=1080',
-        inStock: true,
-        isNew: true
-    },
-    {
-        id: '8',
-        name: 'Ceramic Planter Set',
-        category: 'Decor',
-        price: 59.99,
-        rating: 4.5,
-        reviews: 234,
-        image: 'https://images.unsplash.com/photo-1602522431179-f6552611447e?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxwbGFudCUyMHBvdCUyMGluZG9vcnxlbnwxfHx8fDE3NjMwMjA5NTV8MA&ixlib=rb-4.1.0&q=80&w=1080',
-        inStock: true
-    },
-    {
-        id: '9',
-        name: 'Abstract Wall Art',
-        category: 'Decor',
-        price: 149.99,
-        originalPrice: 199.99,
-        rating: 4.6,
-        reviews: 112,
-        image: 'https://images.unsplash.com/photo-1616782541155-9aafbfa7c97e?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHx3YWxsJTIwYXJ0JTIwZnJhbWV8ZW58MXx8fHwxNjMwMzk3MzF8MA&ixlib=rb-4.1.0&q=80&w=1080',
-        inStock: true,
-        isSale: true
-    },
-    {
-        id: '10',
-        name: 'Velvet Throw Pillows',
-        category: 'Textiles',
-        price: 39.99,
-        rating: 4.4,
-        reviews: 276,
-        image: 'https://images.unsplash.com/photo-1668371558883-dfdfc921da3b?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxjdXNoaW9uJTIwcGlsbG93JTIwZGVjb3J8ZW58MXx8fHwxNzYzMDkyOTE0fDA&ixlib=rb-4.1.0&q=80&w=1080',
-        inStock: true
-    },
-    {
-        id: '11',
-        name: 'Rustic Dining Table',
-        category: 'Tables',
-        price: 899.99,
+        id: 'tee-02',
+        title: 'AirMesh Oversized Tee',
+        price: 42,
+        stockLabel: 'Low stock (4)',
         rating: 4.8,
-        reviews: 189,
-        image: 'https://images.unsplash.com/photo-1758977403438-1b8546560d31?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxkaW5pbmclMjB0YWJsZSUyMHdvb2RlbnxlbnwxfHx8fDE3NjMwMTk1MTZ8MA&ixlib=rb-4.1.0&q=80&w=1080',
-        inStock: true
+        reviews: 198,
+        image: 'https://images.unsplash.com/photo-1475180098004-ca77a66827be?auto=format&fit=crop&w=900&q=80',
+        highlight: 'best',
+        tags: ['Cooling knit', 'Athleisure']
     },
     {
-        id: '12',
-        name: 'Round Wall Mirror',
-        category: 'Decor',
-        price: 129.99,
-        originalPrice: 179.99,
+        id: 'tee-03',
+        title: 'Heritage Ringer Tee',
+        price: 32,
+        stockLabel: 'In stock',
         rating: 4.7,
-        reviews: 145,
-        image: 'https://images.unsplash.com/photo-1612152668368-4ffd30ce2d8d?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxtaXJyb3IlMjB3YWxsJTIwZGVjb3J8ZW58MXx8fHwxNzYzMDkyOTE1fDA&ixlib=rb-4.1.0&q=80&w=1080',
-        inStock: true,
-        isSale: true
+        reviews: 132,
+        image: 'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?auto=format&fit=crop&w=900&q=80',
+        highlight: 'budget',
+        tags: ['Under $35', 'Retro trims']
+    },
+    {
+        id: 'tee-04',
+        title: 'Everyday Pocket Tee',
+        price: 28,
+        stockLabel: 'In stock',
+        rating: 4.5,
+        reviews: 88,
+        image: 'https://images.unsplash.com/photo-1503341455253-b2e723bb3dbb?auto=format&fit=crop&w=900&q=80',
+        highlight: 'budget',
+        tags: ['Wallet friendly']
+    },
+    {
+        id: 'tee-05',
+        title: 'Studio Dye Tee',
+        price: 54,
+        stockLabel: 'In stock',
+        rating: 4.9,
+        reviews: 54,
+        image: 'https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?auto=format&fit=crop&w=1000&q=80',
+        highlight: 'new',
+        tags: ['Hand dyed', 'Limited']
+    },
+    {
+        id: 'tee-06',
+        title: 'Featherweight Boxy Tee',
+        price: 47,
+        stockLabel: 'In stock',
+        rating: 4.6,
+        reviews: 61,
+        image: 'https://images.unsplash.com/photo-1508214751196-bcfd4ca60f91?auto=format&fit=crop&w=1000&q=80',
+        highlight: 'new',
+        tags: ['Drop 07']
     }
 ];
 
-const SORT_OPTIONS = [
-    { label: 'Featured', value: 'featured' },
-    { label: 'Price: Low to High', value: 'price-low' },
-    { label: 'Price: High to Low', value: 'price-high' },
-    { label: 'Highest Rated', value: 'rating' },
-    { label: 'Newest', value: 'newest' }
+const SPOTLIGHT_SECTIONS = [
+    {
+        key: 'best',
+        title: 'Best Pick',
+        blurb: 'Most purchased with standout reviews.'
+    },
+    {
+        key: 'budget',
+        title: 'Budget Friendly',
+        blurb: 'Lowest price without compromising on style.'
+    },
+    {
+        key: 'new',
+        title: 'New Release',
+        blurb: 'Fresh drop added within the last month.'
+    }
 ];
 
-export default function App() {
-    const [searchQuery, setSearchQuery] = useState('');
-    const [selectedCategories, setSelectedCategories] = useState([]);
-    const [priceRange, setPriceRange] = useState([0, 2000]);
-    const [minRating, setMinRating] = useState(0);
-    const [showInStockOnly, setShowInStockOnly] = useState(false);
-    const [sortBy, setSortBy] = useState('featured');
-    const [gridColumns, setGridColumns] = useState(3);
-    const [showMobileFilters, setShowMobileFilters] = useState(false);
+const COUNTRIES = [
+    { value: 'PH', label: 'Philippines' },
+    { value: 'US', label: 'United States' },
+    { value: 'CA', label: 'Canada' },
+    { value: 'JP', label: 'Japan' },
+    { value: 'AU', label: 'Australia' }
+];
 
-    const filteredAndSortedProducts = useMemo(() => {
-        const filtered = mockProducts.filter((product) => {
-            if (searchQuery && !product.name.toLowerCase().includes(searchQuery.toLowerCase())) {
-                return false;
-            }
+const formatPrice = (value) => `$${value.toFixed(2)}`;
 
-            if (selectedCategories.length && !selectedCategories.includes(product.category)) {
-                return false;
-            }
+const productsByHighlight = (key) => HOME_PRODUCTS.filter((product) => product.highlight === key);
 
-            if (product.price < priceRange[0] || product.price > priceRange[1]) {
-                return false;
-            }
-
-            if (minRating > 0 && product.rating < minRating) {
-                return false;
-            }
-
-            if (showInStockOnly && !product.inStock) {
-                return false;
-            }
-
-            return true;
-        });
-
-        const sorted = [...filtered].sort((a, b) => {
-            switch (sortBy) {
-                case 'price-low':
-                    return a.price - b.price;
-                case 'price-high':
-                    return b.price - a.price;
-                case 'rating':
-                    return b.rating - a.rating;
-                case 'newest':
-                    return Number(b.isNew) - Number(a.isNew);
-                default:
-                    return 0;
-            }
-        });
-
-        return sorted;
-    }, [searchQuery, selectedCategories, priceRange, minRating, showInStockOnly, sortBy]);
-
-    const handleClearFilters = () => {
-        setSelectedCategories([]);
-        setPriceRange([0, 2000]);
-        setMinRating(0);
-        setShowInStockOnly(false);
-        setSearchQuery('');
-    };
-
+function SiteHeader() {
     return (
-        <div className="min-h-screen bg-background px-4 py-10 sm:px-6 lg:px-12">
-            <div className="mx-auto max-w-7xl space-y-10">
-                <header className="space-y-3">
-                    <p className="text-sm font-medium uppercase tracking-[0.2em] text-muted-foreground">Product Catalog</p>
-                    <div className="space-y-2">
-                        <h1 className="text-4xl font-semibold leading-tight sm:text-5xl">Discover our curated collection</h1>
-                        <p className="text-lg text-muted-foreground">
-                            Modern furniture, thoughtful textiles, and lighting pieces selected by our design team.
-                        </p>
-                    </div>
-                </header>
-
-                <div className="flex flex-col gap-4 lg:flex-row lg:items-center">
-                    <div className="relative flex-1">
-                        <Search className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
-                        <Input
-                            placeholder="Search products..."
-                            value={searchQuery}
-                            onChange={(event) => setSearchQuery(event.target.value)}
-                            className="pl-12"
-                        />
-                    </div>
-                    <div className="flex flex-1 flex-wrap items-center justify-end gap-3 md:flex-none">
-                        <Select value={sortBy} onValueChange={setSortBy}>
-                            <SelectTrigger className="w-full min-w-[200px] md:w-[220px]">
-                                <SelectValue placeholder="Sort by" />
-                            </SelectTrigger>
-                            <SelectContent>
-                                {SORT_OPTIONS.map((option) => (
-                                    <SelectItem key={option.value} value={option.value}>
-                                        {option.label}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-
-                        <div className="hidden rounded-full border bg-card p-1 md:flex">
-                            <Button
-                                variant={gridColumns === 3 ? 'secondary' : 'ghost'}
-                                size="sm"
-                                className="rounded-full"
-                                onClick={() => setGridColumns(3)}
-                                aria-label="Show three columns"
-                            >
-                                <Grid3x3 className="h-4 w-4" />
-                            </Button>
-                            <Button
-                                variant={gridColumns === 4 ? 'secondary' : 'ghost'}
-                                size="sm"
-                                className="rounded-full"
-                                onClick={() => setGridColumns(4)}
-                                aria-label="Show four columns"
-                            >
-                                <LayoutGrid className="h-4 w-4" />
-                            </Button>
-                        </div>
-
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            className="md:hidden"
-                            onClick={() => setShowMobileFilters((prev) => !prev)}
-                        >
-                            <SlidersHorizontal className="mr-2 h-4 w-4" />
-                            Filters
-                        </Button>
-                    </div>
+        <header className="ts-header" role="banner">
+            <div className="ts-logo" aria-label="T-Shirt Shop logo">
+                <img src="/uploads/Untitled1045_20251105174933.png" alt="T-Shirt Shop" loading="lazy" />
+            </div>
+            <nav className="ts-nav" aria-label="Primary">
+                {NAV_LINKS.map((link) => (
+                    <a key={link.label} href={link.href} className="ts-nav-link">
+                        {link.label}
+                    </a>
+                ))}
+            </nav>
+            <div className="ts-actions">
+                <div className="ts-auth">
+                    <button type="button" className="ts-btn ts-btn-ghost">
+                        Sign In
+                    </button>
+                    <button type="button" className="ts-btn ts-btn-outline">
+                        Sign Up
+                    </button>
                 </div>
+                <button type="button" className="ts-cart">
+                    <span className="ts-cart-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <circle cx="9" cy="21" r="1" />
+                            <circle cx="20" cy="21" r="1" />
+                            <path d="M1 1h4l2.68 11.39a2 2 0 0 0 2 1.61h8.72a2 2 0 0 0 2-1.61L23 6H6" />
+                        </svg>
+                    </span>
+                    <span>View cart</span>
+                </button>
+                <label className="ts-country">
+                    <span>Country</span>
+                    <select>
+                        {COUNTRIES.map((country) => (
+                            <option key={country.value} value={country.value}>
+                                {country.label}
+                            </option>
+                        ))}
+                    </select>
+                </label>
+            </div>
+        </header>
+    );
+}
 
-                <div className="flex flex-col gap-6 lg:flex-row">
-                    <aside
-                        className={clsx(
-                            'w-full flex-shrink-0 transition-all md:w-64 lg:w-72',
-                            showMobileFilters ? 'block' : 'hidden md:block'
-                        )}
-                    >
-                        <Filters
-                            selectedCategories={selectedCategories}
-                            onCategoryChange={setSelectedCategories}
-                            priceRange={priceRange}
-                            onPriceRangeChange={setPriceRange}
-                            minRating={minRating}
-                            onRatingChange={setMinRating}
-                            showInStockOnly={showInStockOnly}
-                            onInStockChange={setShowInStockOnly}
-                            onClearFilters={handleClearFilters}
-                        />
-                    </aside>
+function HeroSection() {
+    return (
+        <section className="ts-hero" id="home">
+            <p className="ts-hero-eyebrow">Original apparel</p>
+            <h1 className="ts-hero-title">
+                <span>Premium Tees</span> Crafted with Simplicity.
+            </h1>
+            <p className="ts-hero-copy">
+                Browse a curated list of minimal, high-quality shirts. Experiment with product management while keeping the
+                experience ultra-clean.
+            </p>
+            <div className="ts-hero-actions">
+                <button type="button" className="ts-btn ts-btn-solid">
+                    Explore Catalog
+                </button>
+                <button type="button" className="ts-btn ts-btn-outline">
+                    View Cart
+                </button>
+                <button type="button" className="ts-btn ts-btn-ghost">
+                    Favorites
+                </button>
+            </div>
+            <div className="ts-hero-stats">
+                {HERO_STATS.map((stat) => (
+                    <div key={stat.label} className="ts-hero-stat">
+                        <span>{stat.value}</span>
+                        <p>{stat.label}</p>
+                    </div>
+                ))}
+            </div>
+        </section>
+    );
+}
 
-                    <main className="flex-1 space-y-6">
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                            <p className="text-sm text-muted-foreground">
-                                {filteredAndSortedProducts.length} product{filteredAndSortedProducts.length === 1 ? '' : 's'}
-                                &nbsp;found
-                            </p>
-                            <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">
-                                {gridColumns === 4 ? 'Compact Grid' : 'Comfort Grid'}
-                            </p>
+function FeatureBand() {
+    return (
+        <section className="ts-hero-feature">
+            <div className="ts-feature-media">
+                <video autoPlay muted loop playsInline poster="/uploads/6a0e3f98-67be-46ce-be31-cafb591885d5.avif">
+                    <source src="/uploads/videoplayback.mp4" type="video/mp4" />
+                </video>
+            </div>
+            <div className="ts-feature-overlay">
+                <p className="ts-feature-eyebrow">Season 07 · Daily Essentials</p>
+                <h2 className="ts-feature-title">Refresh Your Everyday Rotation</h2>
+                <p className="ts-feature-blurb">
+                    Discover breathable staples built to flex with your day. Explore balanced color stories and premium cotton blends curated
+                    by our merch team.
+                </p>
+                <div className="ts-feature-stats">
+                    {HERO_STATS.map((stat) => (
+                        <div key={`feature-${stat.label}`}>
+                            <p>{stat.value}</p>
+                            <span>{stat.label}</span>
                         </div>
-
-                        {filteredAndSortedProducts.length === 0 ? (
-                            <div className="rounded-3xl border bg-card p-10 text-center shadow-sm">
-                                <p className="text-lg font-medium text-foreground">No products match your filters</p>
-                                <p className="mt-2 text-sm text-muted-foreground">
-                                    Try adjusting the filters or clearing them to start over.
-                                </p>
-                                <Button className="mt-6" variant="outline" onClick={handleClearFilters}>
-                                    Clear filters
-                                </Button>
-                            </div>
-                        ) : (
-                            <div
-                                className={clsx(
-                                    'grid gap-6',
-                                    'sm:grid-cols-2',
-                                    gridColumns === 4 ? 'lg:grid-cols-4' : 'lg:grid-cols-3'
-                                )}
-                            >
-                                {filteredAndSortedProducts.map((product) => (
-                                    <ProductCard key={product.id} product={product} />
-                                ))}
-                            </div>
-                        )}
-                    </main>
+                    ))}
+                </div>
+                <div className="ts-feature-tags">
+                    {['Classic tees', 'Essential picks', 'Breathable cotton', 'New drops'].map((tag) => (
+                        <span key={tag}>{tag}</span>
+                    ))}
                 </div>
             </div>
+            <span className="ts-feature-badge">New drop every Friday</span>
+        </section>
+    );
+}
+
+function SpotlightCard({ product }) {
+    return (
+        <article className="ts-card">
+            <div className="ts-card-image">
+                <img src={product.image} alt={product.title} loading="lazy" />
+            </div>
+            <div className="ts-card-body">
+                <div className="ts-card-title-row">
+                    <h3>{product.title}</h3>
+                    <span className="ts-price">{formatPrice(product.price)}</span>
+                </div>
+                <div className="ts-card-meta">
+                    <p className="ts-stock">{product.stockLabel}</p>
+                    <p className="ts-rating">
+                        {product.rating.toFixed(1)}★ · {product.reviews} reviews
+                    </p>
+                </div>
+                <div className="ts-card-tags">
+                    {product.tags?.map((tag) => (
+                        <span key={`${product.id}-${tag}`}>{tag}</span>
+                    ))}
+                </div>
+                <div className="ts-card-actions">
+                    <button type="button" className="ts-btn ts-btn-solid">
+                        View
+                    </button>
+                    <button type="button" className="ts-btn ts-btn-outline">
+                        Add
+                    </button>
+                    <button type="button" className="ts-favorite" aria-label="Toggle favorite">
+                        ♡
+                    </button>
+                </div>
+            </div>
+        </article>
+    );
+}
+
+function SpotlightSection({ section }) {
+    const products = productsByHighlight(section.key);
+    return (
+        <section className="ts-spotlight-section" aria-labelledby={`section-${section.key}`}>
+            <div className="ts-spotlight-heading">
+                <div>
+                    <p className="ts-section-eyebrow">Product spotlight</p>
+                    <h3 className="ts-section-title" id={`section-${section.key}`}>
+                        {section.title}
+                    </h3>
+                    <p className="ts-section-blurb">{section.blurb}</p>
+                </div>
+                <button type="button" className="ts-more">
+                    More
+                </button>
+            </div>
+            <div className="ts-section-grid">
+                {products.map((product) => (
+                    <SpotlightCard key={product.id} product={product} />
+                ))}
+            </div>
+        </section>
+    );
+}
+
+function CatalogPreview() {
+    return (
+        <section className="ts-spotlight" id="catalog">
+            {SPOTLIGHT_SECTIONS.map((section) => (
+                <SpotlightSection key={section.key} section={section} />
+            ))}
+            <div className="ts-preview-cta">
+                <button type="button" className="ts-btn ts-btn-outline">
+                    View full catalog
+                </button>
+            </div>
+        </section>
+    );
+}
+
+function SiteFooter() {
+    return (
+        <footer className="ts-footer">
+            <p>© {new Date().getFullYear()} T-Shirt Shop. All rights reserved 2025.</p>
+            <p className="ts-foot-note">Nicolas Shop.</p>
+        </footer>
+    );
+}
+
+export default function App() {
+    return (
+        <div className="ts-app">
+            <SiteHeader />
+            <main>
+                <HeroSection />
+                <FeatureBand />
+                <CatalogPreview />
+            </main>
+            <SiteFooter />
         </div>
     );
 }
