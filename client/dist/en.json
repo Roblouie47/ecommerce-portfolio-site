@@ -1,0 +1,15 @@
+{
+    "catalog": "Catalog",
+    "home": "Home",
+    "my_orders": "My Orders",
+    "admin": "Admin",
+    "add_to_cart": "Add to Cart",
+    "view_cart": "View Cart",
+    "checkout": "Checkout",
+    "total": "Total",
+    "subtotal": "Subtotal",
+    "shipping": "Shipping",
+    "tax": "Tax",
+    "apply": "Apply",
+    "discount_code": "Discount Code"
+}
