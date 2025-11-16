@@ -1815,6 +1815,14 @@
         return data;
     }
 
+    async function closeRefundCase(orderId, payload = {}) {
+        return respondToRefund(orderId, { ...payload, closeCase: true });
+    }
+
+    async function reopenRefundCase(orderId, payload = {}) {
+        return respondToRefund(orderId, { ...payload, reopenCase: true });
+    }
+
     function describeRefundUsage(order) {
         const requestedAt = order.returnRequestedAt ? new Date(order.returnRequestedAt) : null;
         const deliveredAt = order.completedAt ? new Date(order.completedAt) : (order.shippedAt ? new Date(order.shippedAt) : null);
@@ -5662,13 +5670,13 @@
             el('div', { class: 'panel-header' },
                 el('span', {}, 'Products'),
                 el('div', { class: 'inline-fields', attrs: { style: 'gap:.5rem;align-items:center;' } },
-                    el('button', { class: 'btn btn-small btn-danger', attrs: { id: 'bulk-delete-btn', disabled: 'true' } }, 'Delete Selected'),
-                    el('div', { class: 'flex gap-xs align-center', attrs: { style: 'font-size:.75rem;margin-left:.5rem;gap:.4rem;' } },
-                        el('label', { class: 'flex gap-xs align-center', attrs: { for: 'toggle-show-deleted', style: 'gap:.3rem;cursor:pointer;' } },
-                            el('input', { attrs: { type: 'checkbox', id: 'toggle-show-deleted' } }),
-                            el('span', {}, 'Show Deleted')
-                        ),
+                    el('div', { attrs: { style: 'display:inline-flex;' } },
+                        el('button', { class: 'btn btn-small btn-danger', attrs: { id: 'bulk-delete-btn', disabled: 'true' } }, 'Delete Selected'),
                         el('button', { class: 'btn btn-small btn-danger', attrs: { id: 'bulk-purge-btn', style: 'display:none;', disabled: 'true' } }, 'Delete Selected')
+                    ),
+                    el('label', { class: 'flex gap-xs align-center', attrs: { for: 'toggle-show-deleted', style: 'gap:.3rem;cursor:pointer;font-size:.75rem;margin-left:.5rem;' } },
+                        el('input', { attrs: { type: 'checkbox', id: 'toggle-show-deleted' } }),
+                        el('span', {}, 'Show Deleted')
                     )
                 )
             ),
@@ -6434,22 +6442,25 @@
             const refundOrders = orders.filter(order => order.returnRequestedAt);
             if (refundsSummaryEl) {
                 const counts = { pending: 0, in_review: 0, approved: 0, refunded: 0, declined: 0 };
+                let closedCount = 0;
                 let responseAccumulator = 0;
                 let responseCount = 0;
                 refundOrders.forEach(order => {
                     const key = getRefundStatus(order.returnAdminStatus);
                     counts[key] = (counts[key] || 0) + 1;
+                    if (order.returnClosedAt) closedCount += 1;
                     if (order.returnAdminRespondedAt && order.returnRequestedAt) {
                         responseAccumulator += (new Date(order.returnAdminRespondedAt).getTime() - new Date(order.returnRequestedAt).getTime());
                         responseCount += 1;
                     }
                 });
-                const openCount = counts.pending + counts.in_review;
-                const resolvedCount = counts.approved + counts.refunded + counts.declined;
+                const openCount = refundOrders.filter(o => !o.returnClosedAt && ['pending', 'in_review'].includes(getRefundStatus(o.returnAdminStatus))).length;
+                const resolvedCount = refundOrders.length - openCount;
                 const avgHours = responseCount ? Math.max(1, Math.round(responseAccumulator / responseCount / (1000 * 60 * 60))) : null;
                 const summaryCards = [
                     { label: 'Open', value: openCount },
                     { label: 'Resolved', value: resolvedCount },
+                    { label: 'Closed', value: closedCount },
                     { label: 'Total', value: refundOrders.length },
                     { label: 'Avg response', value: avgHours ? `${avgHours}h` : '—' }
                 ];
@@ -6472,9 +6483,11 @@
                         const heroImg = resolveItemImage(heroItem);
                         const extraItems = Math.max(0, items.length - 1);
                         const statusKey = getRefundStatus(order.returnAdminStatus);
+                        const isClosed = !!order.returnClosedAt;
+                        const closedLabel = isClosed && order.returnClosedAt ? new Date(order.returnClosedAt).toLocaleString() : '';
                         const usageCopy = describeRefundUsage(order);
                         const reasonText = order.returnReason || 'Customer did not provide an explanation.';
-                        const card = el('article', { class: 'admin-refund-card', attrs: { 'data-refund-order': order.id || '' } },
+                        const card = el('article', { class: 'admin-refund-card', attrs: { 'data-refund-order': order.id || '', 'data-case-closed': isClosed ? 'true' : 'false' } },
                             el('div', { class: 'admin-refund-card-head' },
                                 el('div', { class: 'admin-refund-identity' },
                                     el('div', { class: 'admin-refund-thumb' },
@@ -6486,7 +6499,10 @@
                                         el('span', { class: 'admin-refund-customer tiny muted' }, order.customerName || order.customerEmail || 'Unknown customer')
                                     )
                                 ),
-                                el('span', { class: 'admin-refund-status-chip status-' + statusKey }, formatRefundStatus(statusKey))
+                                el('div', { class: 'admin-refund-status-cluster' },
+                                    el('span', { class: 'admin-refund-status-chip status-' + statusKey }, formatRefundStatus(statusKey)),
+                                    isClosed ? el('span', { class: 'admin-refund-case-chip', attrs: { title: closedLabel ? `Closed on ${closedLabel}` : 'Case closed' } }, 'Case closed') : null
+                                )
                             ),
                             el('div', { class: 'admin-refund-overview' },
                                 el('div', { class: 'admin-refund-overview-block' },
@@ -6506,7 +6522,10 @@
                             order.returnUsageNotes ? el('div', { class: 'admin-refund-notes tiny muted' }, 'Usage notes: ', order.returnUsageNotes) : null,
                             el('div', { class: 'admin-refund-actions' },
                                 el('button', { class: 'btn btn-xs btn-outline', attrs: { type: 'button', 'data-refund-toggle': order.id || '', 'aria-expanded': 'false' } }, 'Open conversation'),
-                                el('button', { class: 'btn btn-xs btn-ghost', attrs: { type: 'button', 'data-refund-scroll-order': order.id || '' } }, 'View order card')
+                                el('button', { class: 'btn btn-xs btn-ghost', attrs: { type: 'button', 'data-refund-scroll-order': order.id || '' } }, 'View order card'),
+                                !isClosed ? el('button', { class: 'btn btn-xs btn-danger', attrs: { type: 'button', 'data-refund-close': order.id || '' } }, 'Close case')
+                                    : el('button', { class: 'btn btn-xs btn-outline', attrs: { type: 'button', 'data-refund-reopen': order.id || '' } }, 'Reopen case'),
+                                isClosed ? el('span', { class: 'tiny muted admin-refund-closed-note', attrs: { 'data-refund-closed-label': order.id || '' } }, closedLabel ? `Closed ${closedLabel}` : 'Closed') : null
                             ),
                             el('div', { class: 'admin-refund-detail hidden', attrs: { 'data-refund-detail': order.id || '' } },
                                 el('div', { class: 'admin-refund-timeline' },
@@ -6528,26 +6547,27 @@
                                         el('p', { class: 'tiny muted' }, 'Conversation loads when opened.')
                                     ),
                                     el('form', { class: 'admin-refund-reply', attrs: { 'data-refund-form': order.id || '' } },
+                                        isClosed ? el('p', { class: 'tiny alert admin-refund-closed-banner' }, closedLabel ? `Case closed ${closedLabel}. Reopen to reply.` : 'Case closed. Reopen to send new updates.') : null,
                                         el('label', {},
                                             el('span', { class: 'tiny muted' }, 'Status'),
-                                            el('select', { attrs: { name: 'refund-status' } },
+                                            el('select', { attrs: { name: 'refund-status', disabled: isClosed ? 'true' : null } },
                                                 Object.entries(REFUND_STATUS_LABELS).map(([value, label]) => el('option', { attrs: { value, selected: value === statusKey ? 'true' : null } }, label))
                                             )
                                         ),
                                         el('label', {},
                                             el('span', { class: 'tiny muted' }, 'Usage notes (internal)'),
-                                            el('input', { attrs: { type: 'text', name: 'refund-usage', value: order.returnUsageNotes || '', placeholder: 'Ex: Signs of wear on collar' } })
+                                            el('input', { attrs: { type: 'text', name: 'refund-usage', value: order.returnUsageNotes || '', placeholder: 'Ex: Signs of wear on collar', disabled: isClosed ? 'true' : null } })
                                         ),
                                         el('label', {},
                                             el('span', { class: 'tiny muted' }, 'Internal notes'),
-                                            el('textarea', { attrs: { name: 'refund-notes', rows: '2', placeholder: 'Visible defects, next steps…' } }, order.returnAdminNotes || '')
+                                            el('textarea', { attrs: { name: 'refund-notes', rows: '2', placeholder: 'Visible defects, next steps…', disabled: isClosed ? 'true' : null } }, order.returnAdminNotes || '')
                                         ),
                                         el('label', {},
                                             el('span', { class: 'tiny muted' }, 'Reply to customer'),
-                                            el('textarea', { attrs: { name: 'refund-message', rows: '3', placeholder: 'Share updates or next steps (optional)' } })
+                                            el('textarea', { attrs: { name: 'refund-message', rows: '3', placeholder: 'Share updates or next steps (optional)', disabled: isClosed ? 'true' : null } })
                                         ),
                                         el('div', { class: 'admin-refund-reply-actions' },
-                                            el('button', { class: 'btn btn-xs', attrs: { type: 'submit' } }, 'Update & send')
+                                            el('button', { class: 'btn btn-xs', attrs: { type: 'submit', disabled: isClosed ? 'true' : null } }, 'Update & send')
                                         )
                                     )
                                 )
@@ -6597,11 +6617,83 @@
                                 }
                             }
                         }
+                        const closeBtn = event.target.closest('[data-refund-close]');
+                        if (closeBtn) {
+                            const orderId = closeBtn.getAttribute('data-refund-close');
+                            if (!orderId) return;
+                            if (!confirm('Close this refund case? The conversation will be read-only until reopened.')) return;
+                            const form = refundsListEl.querySelector(`[data-refund-form="${CSS.escape(orderId)}"]`);
+                            const payload = form ? {
+                                status: form.querySelector('select[name="refund-status"]')?.value,
+                                notes: form.querySelector('textarea[name="refund-notes"]')?.value,
+                                usageNotes: form.querySelector('input[name="refund-usage"]')?.value,
+                                message: form.querySelector('textarea[name="refund-message"]')?.value
+                            } : {};
+                            closeBtn.disabled = true;
+                            try {
+                                const result = await closeRefundCase(orderId, payload);
+                                const order = orders.find(o => String(o.id) === String(orderId));
+                                if (order) {
+                                    order.returnAdminStatus = result.status || order.returnAdminStatus;
+                                    order.returnAdminNotes = result.notes ?? order.returnAdminNotes;
+                                    order.returnUsageNotes = result.usageNotes ?? order.returnUsageNotes;
+                                    order.returnAdminRespondedAt = result.respondedAt || order.returnAdminRespondedAt;
+                                    order.returnClosedAt = result.closedAt || new Date().toISOString();
+                                }
+                                if (result?.message) {
+                                    const store = getRefundThreadStore('admin');
+                                    const cache = store.get(orderId);
+                                    if (cache) {
+                                        cache.messages = [...cache.messages, result.message];
+                                    } else {
+                                        store.set(orderId, { messages: [result.message] });
+                                    }
+                                }
+                                renderRefundMessagesThread(orderId);
+                                refreshAdminTables();
+                                notify('Refund case closed', 'success', 2400);
+                            } catch (err) {
+                                notify('Unable to close case: ' + (err?.message || 'Unknown error'), 'error');
+                            } finally {
+                                closeBtn.disabled = false;
+                            }
+                            return;
+                        }
+                        const reopenBtn = event.target.closest('[data-refund-reopen]');
+                        if (reopenBtn) {
+                            const orderId = reopenBtn.getAttribute('data-refund-reopen');
+                            if (!orderId) return;
+                            const form = refundsListEl.querySelector(`[data-refund-form="${CSS.escape(orderId)}"]`);
+                            const payload = form ? {
+                                status: form.querySelector('select[name="refund-status"]')?.value
+                            } : {};
+                            reopenBtn.disabled = true;
+                            try {
+                                const result = await reopenRefundCase(orderId, payload);
+                                const order = orders.find(o => String(o.id) === String(orderId));
+                                if (order) {
+                                    order.returnAdminStatus = result.status || order.returnAdminStatus;
+                                    order.returnClosedAt = result.closedAt || null;
+                                    order.returnAdminRespondedAt = result.respondedAt || order.returnAdminRespondedAt;
+                                }
+                                refreshAdminTables();
+                                notify('Refund case reopened', 'success', 2200);
+                            } catch (err) {
+                                notify('Unable to reopen case: ' + (err?.message || 'Unknown error'), 'error');
+                            } finally {
+                                reopenBtn.disabled = false;
+                            }
+                            return;
+                        }
                     });
                     refundsListEl.addEventListener('submit', async (event) => {
                         const form = event.target.closest('[data-refund-form]');
                         if (!form) return;
                         event.preventDefault();
+                        if (form.closest('[data-case-closed="true"]')) {
+                            notify('Case is closed. Reopen it before sending new updates.', 'warn');
+                            return;
+                        }
                         const orderId = form.getAttribute('data-refund-form');
                         if (!orderId) return;
                         const status = form.querySelector('select[name="refund-status"]').value;
@@ -6621,6 +6713,7 @@
                                 order.returnAdminNotes = result.notes;
                                 order.returnAdminRespondedAt = result.respondedAt;
                                 order.returnUsageNotes = result.usageNotes;
+                                order.returnClosedAt = result.closedAt || null;
                             }
                             renderRefundMessagesThread(orderId);
                             refreshAdminTables();
@@ -6628,6 +6721,7 @@
                         } catch (err) {
                             const msg = err?.message?.includes('HTTP 404')
                                 ? 'HTTP 404 (route missing). Restart or redeploy the server so /api/orders/:id/refund-response is available, then refresh admin data.'
+                                : err?.status === 409 ? 'Case already closed. Click Reopen before updating.'
                                 : err?.message || 'Unknown error';
                             notify('Unable to update refund: ' + msg, 'error');
                             console.warn('[refund-response] failed for', orderId, err);

@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS orders (
   returnAdminNotes TEXT,
   returnAdminRespondedAt TEXT,
   returnUsageNotes TEXT,
+  returnClosedAt TEXT,
   stripeSessionId TEXT,
   stripePaymentIntentId TEXT,
   paymentProvider TEXT,
@@ -206,6 +207,7 @@ try {
   if (need('returnAdminNotes')) db.exec('ALTER TABLE orders ADD COLUMN returnAdminNotes TEXT');
   if (need('returnAdminRespondedAt')) db.exec('ALTER TABLE orders ADD COLUMN returnAdminRespondedAt TEXT');
   if (need('returnUsageNotes')) db.exec('ALTER TABLE orders ADD COLUMN returnUsageNotes TEXT');
+  if (need('returnClosedAt')) db.exec('ALTER TABLE orders ADD COLUMN returnClosedAt TEXT');
   if (need('stripeSessionId')) db.exec('ALTER TABLE orders ADD COLUMN stripeSessionId TEXT');
   if (need('stripePaymentIntentId')) db.exec('ALTER TABLE orders ADD COLUMN stripePaymentIntentId TEXT');
   if (need('paymentProvider')) db.exec('ALTER TABLE orders ADD COLUMN paymentProvider TEXT');
