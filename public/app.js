@@ -1599,9 +1599,20 @@
         if (state.admin.token && !headers['X-Admin-Token']) headers['X-Admin-Token'] = state.admin.token;
         if (state.customer?.sessionToken && !headers.Authorization && !headers.authorization) headers.Authorization = 'Bearer ' + state.customer.sessionToken;
         const res = await fetch(path, { ...rest, headers });
+        const noContent = res.status === 204;
+        const raw = noContent ? '' : await res.text();
         if (!res.ok) {
             let msg = `HTTP ${res.status}`;
-            try { const j = await res.json(); msg = j.error || j.errors?.join(', ') || msg; } catch { }
+            let body = null;
+            if (raw) {
+                try {
+                    body = JSON.parse(raw);
+                    msg = body.error || (Array.isArray(body.errors) ? body.errors.join(', ') : msg);
+                } catch {
+                    const trimmed = raw.trim();
+                    if (trimmed) msg = trimmed.slice(0, 400);
+                }
+            }
             if (res.status === 401) {
                 const isAdminPath = path.startsWith('/api/admin');
                 if (isAdminPath) {
@@ -1612,10 +1623,13 @@
                     if (!suppressAuthNotify) notify('Please sign in to continue.', 'warn', 3200);
                 }
             }
-            throw new Error(msg);
+            const error = new Error(msg);
+            error.status = res.status;
+            error.body = body;
+            throw error;
         }
-        if (res.status === 204) return null; // no content
-        return await res.json();
+        if (!raw) return null;
+        try { return JSON.parse(raw); } catch { return raw; }
     }
 
     async function loadProducts(includeDeleted = false) {
@@ -1882,6 +1896,20 @@
     async function deleteProduct(id) {
         return apiFetch(`/api/products/${id}`, {
             method: 'DELETE'
+        });
+    }
+
+    async function destroyProduct(id) {
+        return apiFetch(`/api/products/${id}/permanent`, {
+            method: 'DELETE'
+        });
+    }
+
+    async function bulkDestroyProducts(ids) {
+        return apiFetch('/api/products/bulk-permanent-delete', {
+            method: 'POST',
+            body: JSON.stringify({ ids }),
+            headers: { 'Content-Type': 'application/json' }
         });
     }
 
@@ -5633,11 +5661,14 @@
         const prodWrap = el('div', { class: 'panel mt-md', attrs: { 'data-admin-section': 'products' } },
             el('div', { class: 'panel-header' },
                 el('span', {}, 'Products'),
-                el('div', { class: 'inline-fields' },
-                    el('button', { class: 'btn btn-small btn-danger', attrs: { id: 'bulk-delete-btn', disabled: 'true' } }, 'Delete Selected')
-                    , el('label', { class: 'flex gap-xs align-center', attrs: { style: 'font-size:.75rem;margin-left:.5rem;' } },
-                        el('input', { attrs: { type: 'checkbox', id: 'toggle-show-deleted' } }),
-                        el('span', {}, 'Show Deleted')
+                el('div', { class: 'inline-fields', attrs: { style: 'gap:.5rem;align-items:center;' } },
+                    el('button', { class: 'btn btn-small btn-danger', attrs: { id: 'bulk-delete-btn', disabled: 'true' } }, 'Delete Selected'),
+                    el('div', { class: 'flex gap-xs align-center', attrs: { style: 'font-size:.75rem;margin-left:.5rem;gap:.4rem;' } },
+                        el('label', { class: 'flex gap-xs align-center', attrs: { for: 'toggle-show-deleted', style: 'gap:.3rem;cursor:pointer;' } },
+                            el('input', { attrs: { type: 'checkbox', id: 'toggle-show-deleted' } }),
+                            el('span', {}, 'Show Deleted')
+                        ),
+                        el('button', { class: 'btn btn-small btn-danger', attrs: { id: 'bulk-purge-btn', style: 'display:none;', disabled: 'true' } }, 'Delete Selected')
                     )
                 )
             ),
@@ -5770,12 +5801,18 @@
         const pt = document.getElementById('admin-products-table');
         const buildProductActionsCell = (product, deletedView) => {
             const editBtn = el('button', { class: 'btn btn-compact btn-outline', attrs: { 'data-edit': product.id } }, 'Edit');
-            const secondaryBtn = deletedView
-                ? el('button', { class: 'btn btn-compact btn-success', attrs: { 'data-restore': product.id } }, 'Restore')
-                : el('button', { class: 'btn btn-compact btn-danger', attrs: { 'data-del': product.id } }, 'Delete');
             const stackClass = deletedView ? 'admin-actions-stack admin-actions-stack--restore' : 'admin-actions-stack';
+            const actions = [editBtn];
+            if (deletedView) {
+                actions.push(
+                    el('button', { class: 'btn btn-compact btn-success', attrs: { 'data-restore': product.id } }, 'Restore'),
+                    el('button', { class: 'btn btn-compact btn-danger', attrs: { 'data-destroy': product.id } }, 'Delete Forever')
+                );
+            } else {
+                actions.push(el('button', { class: 'btn btn-compact btn-danger', attrs: { 'data-del': product.id } }, 'Delete'));
+            }
             return el('td', { class: 'admin-actions-cell' },
-                el('div', { class: stackClass }, editBtn, secondaryBtn)
+                el('div', { class: stackClass }, ...actions)
             );
         };
         if (pt) {
@@ -5811,60 +5848,181 @@
                 tbody.appendChild(tr);
             }
             const bulkBtn = document.getElementById('bulk-delete-btn');
-            function updateBulkButton() {
-                const selected = tbody.querySelectorAll('input[data-select-id]:checked').length;
-                if (selected > 0) { bulkBtn.removeAttribute('disabled'); bulkBtn.textContent = `Delete Selected (${selected})`; }
-                else { bulkBtn.setAttribute('disabled', 'true'); bulkBtn.textContent = 'Delete Selected'; }
+            const purgeBtn = document.getElementById('bulk-purge-btn');
+            const getTableBody = () => pt.querySelector('tbody');
+            const getRowCheckboxes = () => Array.from(getTableBody()?.querySelectorAll('input[data-select-id]') || []);
+            function updateSelectionButtons() {
+                const selected = getRowCheckboxes().filter(cb => cb.checked).length;
+                const label = selected > 0 ? `Delete Selected (${selected})` : 'Delete Selected';
+                if (bulkBtn) {
+                    bulkBtn.textContent = label;
+                    if (!state.admin.showDeleted && selected > 0) bulkBtn.removeAttribute('disabled'); else bulkBtn.setAttribute('disabled', 'true');
+                }
+                if (purgeBtn) {
+                    purgeBtn.textContent = label;
+                    if (state.admin.showDeleted && selected > 0) purgeBtn.removeAttribute('disabled'); else purgeBtn.setAttribute('disabled', 'true');
+                }
             }
-            // Hide bulk delete controls when viewing deleted history
-            if (state.admin.showDeleted) {
-                bulkBtn.style.display = 'none';
-            } else {
-                bulkBtn.style.display = '';
-            }
+            // Toggle button visibility depending on view mode
+            if (bulkBtn) bulkBtn.style.display = state.admin.showDeleted ? 'none' : '';
+            if (purgeBtn) purgeBtn.style.display = state.admin.showDeleted ? '' : 'none';
             if (!pt._wired) {
                 pt._wired = true;
                 pt.addEventListener('change', (e) => {
                     if (e.target.id === 'select-all-products') {
-                        const checked = e.target.checked; tbody.querySelectorAll('input[data-select-id]').forEach(cb => cb.checked = checked); updateBulkButton();
-                    } else if (e.target.hasAttribute('data-select-id')) { updateBulkButton(); }
+                        const checked = e.target.checked;
+                        getRowCheckboxes().forEach(cb => cb.checked = checked);
+                        updateSelectionButtons();
+                    } else if (e.target.hasAttribute('data-select-id')) { updateSelectionButtons(); }
                 });
-                bulkBtn.addEventListener('click', async () => {
-                    const ids = Array.from(tbody.querySelectorAll('input[data-select-id]:checked')).map(cb => cb.getAttribute('data-select-id'));
-                    if (!ids.length) return; if (!confirm(`Delete ${ids.length} product(s)?`)) return;
-                    const now = new Date().toISOString();
-                    const previous = ids.map(id => ({ id, prev: state.productsById.get(id)?.deletedAt || null }));
-                    // Optimistic: mark deleted & re-render immediately
-                    ids.forEach(id => { const p = state.productsById.get(id); if (p) p.deletedAt = now; });
-                    // Store snapshots in deletedBuffer
-                    ids.forEach(id => { const p = state.productsById.get(id); if (p) state.deletedBuffer.set(id, { ...p }); });
-                    refreshAdminTables();
-                    // Immediately refresh shop views so items disappear there too
-                    if (['home', 'catalog'].includes(state.currentRoute)) {
-                        if (state.currentRoute === 'home') renderHome(); else if (state.currentRoute === 'catalog') renderCatalog();
-                        sanitizeCart();
-                    }
-                    try {
-                        await bulkDeleteProducts(ids);
-                        notify('Deleted ' + ids.length + ' products', 'success', 6000, {
-                            actionText: 'Undo',
-                            onAction: async () => {
-                                try { await bulkRestoreProducts(ids); ids.forEach(id => { const p = state.productsById.get(id); if (p) p.deletedAt = null; }); refreshAdminTables(); notify('Restored ' + ids.length, 'success'); await refreshAdminData(); }
-                                catch (e) { notify('Restore failed: ' + e.message, 'error'); }
-                            }
-                        });
-                        refreshAdminData(); // background sync
-                    } catch (err) {
-                        // Revert optimistic change
-                        previous.forEach(({ id, prev }) => { const p = state.productsById.get(id); if (p) p.deletedAt = prev; });
+                if (bulkBtn && !bulkBtn._bulkSoftWired) {
+                    bulkBtn._bulkSoftWired = true;
+                    bulkBtn.addEventListener('click', async () => {
+                        const ids = getRowCheckboxes().filter(cb => cb.checked).map(cb => cb.getAttribute('data-select-id'));
+                        if (!ids.length) return; if (!confirm(`Delete ${ids.length} product(s)?`)) return;
+                        const now = new Date().toISOString();
+                        const previous = ids.map(id => ({ id, prev: state.productsById.get(id)?.deletedAt || null }));
+                        // Optimistic: mark deleted & re-render immediately
+                        ids.forEach(id => { const p = state.productsById.get(id); if (p) p.deletedAt = now; });
+                        // Store snapshots in deletedBuffer
+                        ids.forEach(id => { const p = state.productsById.get(id); if (p) state.deletedBuffer.set(id, { ...p }); });
                         refreshAdminTables();
-                        notify('Bulk delete failed: ' + err.message, 'error');
-                    }
-                });
+                        // Immediately refresh shop views so items disappear there too
+                        if (['home', 'catalog'].includes(state.currentRoute)) {
+                            if (state.currentRoute === 'home') renderHome(); else if (state.currentRoute === 'catalog') renderCatalog();
+                            sanitizeCart();
+                        }
+                        try {
+                            await bulkDeleteProducts(ids);
+                            notify('Deleted ' + ids.length + ' products', 'success', 6000, {
+                                actionText: 'Undo',
+                                onAction: async () => {
+                                    try { await bulkRestoreProducts(ids); ids.forEach(id => { const p = state.productsById.get(id); if (p) p.deletedAt = null; }); refreshAdminTables(); notify('Restored ' + ids.length, 'success'); await refreshAdminData(); }
+                                    catch (e) { notify('Restore failed: ' + e.message, 'error'); }
+                                }
+                            });
+                            refreshAdminData(); // background sync
+                        } catch (err) {
+                            // Revert optimistic change
+                            previous.forEach(({ id, prev }) => { const p = state.productsById.get(id); if (p) p.deletedAt = prev; });
+                            refreshAdminTables();
+                            notify('Bulk delete failed: ' + err.message, 'error');
+                        }
+                    });
+                }
+                if (purgeBtn && !purgeBtn._bulkPurgeWired) {
+                    purgeBtn._bulkPurgeWired = true;
+                    purgeBtn.addEventListener('click', async () => {
+                        const ids = getRowCheckboxes().filter(cb => cb.checked).map(cb => cb.getAttribute('data-select-id'));
+                        if (!ids.length) return;
+                        if (!confirm(`Permanently delete ${ids.length} product(s)? This cannot be undone.`)) return;
+                        const originalText = purgeBtn.textContent;
+                        purgeBtn.textContent = 'Deleting…';
+                        purgeBtn.setAttribute('disabled', 'true');
+                        const productsArray = Array.isArray(state.products) ? state.products : null;
+                        const snapshots = new Map();
+                        ids.forEach(id => {
+                            const product = state.productsById.get(id) || state.deletedBuffer.get(id);
+                            const index = productsArray ? productsArray.findIndex(p => p.id === id) : -1;
+                            if (product) snapshots.set(id, { product: { ...product }, index });
+                            if (productsArray && index >= 0) {
+                                productsArray.splice(index, 1);
+                            }
+                            state.productsById.delete(id);
+                            state.deletedBuffer.delete(id);
+                        });
+                        refreshAdminTables();
+                        const restoreSnapshot = (id) => {
+                            const snap = snapshots.get(id);
+                            if (!snap) return;
+                            const { product, index } = snap;
+                            if (productsArray) {
+                                const insertIdx = index >= 0 && index <= productsArray.length ? index : productsArray.length;
+                                productsArray.splice(insertIdx, 0, product);
+                            } else if (Array.isArray(state.products)) {
+                                state.products.push(product);
+                            } else {
+                                state.products = [product];
+                            }
+                            state.productsById.set(id, product);
+                            if (product.deletedAt) state.deletedBuffer.set(id, { ...product });
+                        };
+                        const sequentialFallback = async (targetIds) => {
+                            const success = [];
+                            const failed = [];
+                            const failureMessages = [];
+                            let missingRouteOnly = true;
+                            for (const id of targetIds) {
+                                try {
+                                    await destroyProduct(id);
+                                    success.push(id);
+                                } catch (err) {
+                                    const msg = err?.message || '';
+                                    const isMissingRoute = err?.status === 404 && !/not found/i.test(msg);
+                                    if (/not found/i.test(msg)) {
+                                        success.push(id); // already gone server-side
+                                    } else {
+                                        failed.push(id);
+                                        failureMessages.push(msg || 'Unknown error');
+                                        if (!isMissingRoute) missingRouteOnly = false;
+                                    }
+                                }
+                            }
+                            if (failed.length === targetIds.length) {
+                                const error = new Error(missingRouteOnly ? 'Server missing permanent delete endpoint. Restart backend to load latest routes.' : `Unable to permanently delete selected products (${failureMessages[0] || 'see console'})`);
+                                if (missingRouteOnly) error.code = 'missing-perma-endpoint';
+                                throw error;
+                            }
+                            return { ids: success, skipped: failed };
+                        };
+                        try {
+                            let result;
+                            let fallbackUsed = false;
+                            try {
+                                result = await bulkDestroyProducts(ids);
+                            } catch (err) {
+                                const isMissing = err?.status === 404 || /404/.test(err?.message || '');
+                                if (isMissing) {
+                                    fallbackUsed = true;
+                                    result = await sequentialFallback(ids);
+                                } else {
+                                    throw err;
+                                }
+                            }
+                            const deletedIds = new Set(result?.ids || []);
+                            const skipped = Array.isArray(result?.skipped) ? result.skipped.filter(Boolean) : [];
+                            if (skipped.length) {
+                                skipped.forEach(restoreSnapshot);
+                                refreshAdminTables();
+                                notify(`Permanently deleted ${deletedIds.size} product(s). ${skipped.length} could not be purged.`, 'warn', 6000);
+                            } else {
+                                const count = deletedIds.size;
+                                notify('Permanently removed ' + count + ' product' + (count === 1 ? '' : 's'), 'success', 5000);
+                            }
+                            if (fallbackUsed) {
+                                notify('Bulk purge endpoint unavailable on server. Used per-item deletes instead. Restart backend (e.g., $env:ADMIN_TOKEN="changeme"; .\\node-portable\\node.exe .\\server.js) to enable the faster route.', 'info', 8000);
+                            }
+                            await refreshAdminData();
+                        } catch (err) {
+                            ids.forEach(restoreSnapshot);
+                            refreshAdminTables();
+                            if (err?.code === 'missing-perma-endpoint') {
+                                notify('Permanent delete endpoints are missing on the server. Restart it with the latest code (e.g., $env:ADMIN_TOKEN="changeme"; .\\node-portable\\node.exe .\\server.js).', 'error', 8000);
+                            } else {
+                                notify('Permanent delete failed: ' + err.message, 'error');
+                            }
+                        } finally {
+                            purgeBtn.textContent = originalText;
+                            purgeBtn.removeAttribute('disabled');
+                            updateSelectionButtons();
+                        }
+                    });
+                }
                 pt.addEventListener('click', async (e) => {
                     const btnEdit = e.target.closest('[data-edit]');
                     const btnDel = e.target.closest('[data-del]');
                     const btnRestore = e.target.closest('[data-restore]');
+                    const btnDestroy = e.target.closest('[data-destroy]');
                     if (btnEdit) { showProductModal(state.productsById.get(btnEdit.getAttribute('data-edit'))); }
                     else if (btnDel) {
                         const id = btnDel.getAttribute('data-del');
@@ -5921,9 +6079,41 @@
                                 if (state.currentRoute === 'home') renderHome(); else if (state.currentRoute === 'catalog') renderCatalog();
                             }
                         }
+                    } else if (btnDestroy) {
+                        const id = btnDestroy.getAttribute('data-destroy');
+                        if (!id) return;
+                        if (!confirm('Permanently delete this product? This cannot be undone.')) return;
+                        const productsArray = Array.isArray(state.products) ? state.products : null;
+                        const prod = state.productsById.get(id);
+                        const index = productsArray ? productsArray.findIndex(p => p.id === id) : -1;
+                        const snapshot = prod ? { ...prod } : null;
+                        if (productsArray && index >= 0) {
+                            productsArray.splice(index, 1);
+                        }
+                        if (state.productsById?.delete) state.productsById.delete(id);
+                        state.deletedBuffer.delete(id);
+                        refreshAdminTables();
+                        try {
+                            await destroyProduct(id);
+                            notify('Product permanently removed', 'success', 3500);
+                            await refreshAdminData();
+                        } catch (err) {
+                            if (snapshot) {
+                                if (productsArray) {
+                                    const reinsertionIndex = index >= 0 ? index : productsArray.length;
+                                    productsArray.splice(reinsertionIndex, 0, snapshot);
+                                } else if (!Array.isArray(state.products)) {
+                                    state.products = [snapshot];
+                                }
+                                if (state.productsById?.set) state.productsById.set(id, snapshot);
+                                if (snapshot.deletedAt) state.deletedBuffer.set(id, { ...snapshot });
+                            }
+                            refreshAdminTables();
+                            notify('Permanent delete failed: ' + err.message, 'error');
+                        }
                     }
                 });
-            } else { updateBulkButton(); }
+            } else { updateSelectionButtons(); }
         }
         // When viewing deleted products, also inject any pending buffered deletions that might not be in state.products (rare race)
         if (state.admin.showDeleted) {

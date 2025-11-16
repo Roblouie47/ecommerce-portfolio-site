@@ -800,6 +800,74 @@ app.post('/api/products/:id/restore', requireAdmin, (req, res) => {
   res.json({ restored: true });
 });
 
+app.delete('/api/products/:id/permanent', requireAdmin, (req, res) => {
+  const product = db.prepare('SELECT * FROM products WHERE id=?').get(req.params.id);
+  if (!product) return res.status(404).json({ error: 'Not found' });
+  if (!product.deletedAt) return res.status(400).json({ error: 'Product must be deleted before purging' });
+  const deleteCartItems = db.prepare('DELETE FROM cart_items WHERE productId=?');
+  const deleteProductRow = db.prepare('DELETE FROM products WHERE id=? AND deletedAt IS NOT NULL');
+  const deletePermanentTx = db.transaction((id) => {
+    deleteCartItems.run(id);
+    const result = deleteProductRow.run(id);
+    if (!result.changes) throw new Error('Product already restored');
+  });
+  try {
+    deletePermanentTx(req.params.id);
+    lastProductsETag = null; lastProductsKey = ''; lastProductsPayload = null;
+    audit('product', req.params.id, 'delete-permanent', product, null);
+    res.json({ deleted: true, permanent: true });
+  } catch (err) {
+    console.error('[products] permanent delete failed', err);
+    if (err && typeof err.message === 'string' && err.message.includes('restored')) {
+      return res.status(409).json({ error: 'Product was restored before permanent delete could run' });
+    }
+    res.status(500).json({ error: 'Unable to permanently delete product' });
+  }
+});
+
+console.log('[products] bulk permanent delete route registering');
+app.post('/api/products/bulk-permanent-delete', requireAdmin, (req, res) => {
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'ids[] required' });
+  const unique = [...new Set(ids.filter(id => typeof id === 'string' && id.length <= 64))];
+  if (!unique.length) return res.status(400).json({ error: 'No valid ids provided' });
+  const fetchProduct = db.prepare('SELECT * FROM products WHERE id=?');
+  const deleteCartItems = db.prepare('DELETE FROM cart_items WHERE productId=?');
+  const deleteProductRow = db.prepare('DELETE FROM products WHERE id=? AND deletedAt IS NOT NULL');
+  const deleted = [];
+  const skipped = [];
+  const tx = db.transaction(list => {
+    for (const id of list) {
+      const product = fetchProduct.get(id);
+      if (!product || !product.deletedAt) {
+        skipped.push(id);
+        continue;
+      }
+      deleteCartItems.run(id);
+      const info = deleteProductRow.run(id);
+      if (info.changes) {
+        deleted.push({ id, product });
+      } else {
+        skipped.push(id);
+      }
+    }
+  });
+  try {
+    tx(unique);
+    if (deleted.length) {
+      lastProductsETag = null; lastProductsKey = ''; lastProductsPayload = null;
+      deleted.forEach(entry => {
+        audit('product', entry.id, 'delete-permanent', entry.product, null);
+      });
+    }
+    const deletedIds = deleted.map(d => d.id);
+    res.json({ deleted: deletedIds.length, ids: deletedIds, skipped });
+  } catch (err) {
+    console.error('[products] bulk permanent delete failed', err);
+    res.status(500).json({ error: 'Unable to permanently delete products' });
+  }
+});
+
 // Bulk delete products
 app.post('/api/products/bulk-delete', requireAdmin, (req, res) => {
   const { ids } = req.body || {};
