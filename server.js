@@ -649,6 +649,19 @@ app.post('/api/customer/logout', (req, res) => {
 // Health route module
 app.use('/api', require('./src/routes/health'));
 
+const REFUND_STATUS_SET = new Set(['pending', 'in_review', 'approved', 'refunded', 'declined']);
+function normalizeRefundStatus(value, fallback = 'in_review') {
+  const normalized = typeof value === 'string'
+    ? value.toLowerCase().replace(/\s+/g, '_')
+    : '';
+  if (REFUND_STATUS_SET.has(normalized)) return normalized;
+  const fallbackNormalized = typeof fallback === 'string'
+    ? fallback.toLowerCase().replace(/\s+/g, '_')
+    : '';
+  if (REFUND_STATUS_SET.has(fallbackNormalized)) return fallbackNormalized;
+  return 'in_review';
+}
+
 // ---------- Product Endpoints ----------
 app.get('/api/products', (req, res) => {
   const { search = '', tag, page = '1', pageSize = '20', sort = 'createdAt:desc' } = req.query;
@@ -1519,17 +1532,37 @@ app.post('/api/orders/:id/refund-response', requireAdmin, (req, res) => {
   const order = db.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
   if (!order.returnRequestedAt) return res.status(400).json({ error: 'No refund requested' });
-  const { status, notes = '', message = '', usageNotes = '' } = req.body || {};
-  const allowed = new Set(['pending', 'in_review', 'approved', 'refunded', 'declined']);
-  const normalized = (typeof status === 'string' ? status.toLowerCase().replace(/\s+/g, '_') : '').trim();
-  const finalStatus = allowed.has(normalized) ? normalized : 'in_review';
+  const {
+    status,
+    notes = '',
+    message = '',
+    usageNotes = '',
+    closeCase = false,
+    reopenCase = false
+  } = req.body || {};
+  const wantsClose = closeCase === true || closeCase === 'true';
+  const wantsReopen = reopenCase === true || reopenCase === 'true';
+  if (order.returnClosedAt && !wantsReopen && !wantsClose) {
+    return res.status(409).json({ error: 'Case already closed. Reopen before updating.' });
+  }
   const now = new Date().toISOString();
   const safeNotes = typeof notes === 'string' ? notes.trim().slice(0, 2000) : '';
   const safeUsage = typeof usageNotes === 'string' ? usageNotes.trim().slice(0, 1000) : '';
-  db.prepare('UPDATE orders SET returnAdminStatus=?, returnAdminNotes=?, returnAdminRespondedAt=?, returnUsageNotes=? WHERE id=?')
-    .run(finalStatus, safeNotes || null, now, safeUsage || null, order.id);
+  let finalStatus = normalizeRefundStatus(status, order.returnAdminStatus || 'in_review');
+  if (!status && wantsClose) {
+    finalStatus = normalizeRefundStatus(order.returnAdminStatus || 'refunded', 'refunded');
+  }
+  if (!status && wantsReopen) {
+    finalStatus = 'in_review';
+  }
+  let closedAt = order.returnClosedAt || null;
+  if (wantsClose) closedAt = now;
+  if (wantsReopen) closedAt = null;
+  const auditAction = wantsClose ? 'refund-close' : (wantsReopen ? 'refund-reopen' : 'refund-response');
+  db.prepare('UPDATE orders SET returnAdminStatus=?, returnAdminNotes=?, returnAdminRespondedAt=?, returnUsageNotes=?, returnClosedAt=? WHERE id=?')
+    .run(finalStatus, safeNotes || null, now, safeUsage || null, closedAt, order.id);
   db.prepare('INSERT INTO order_events(id,orderId,status,at) VALUES(?,?,?,?)').run(uuidv4(), order.id, 'return_admin_response', now);
-  audit('order', order.id, 'refund-response', { returnAdminStatus: order.returnAdminStatus, returnAdminNotes: order.returnAdminNotes }, { returnAdminStatus: finalStatus, returnAdminNotes: safeNotes || null, returnUsageNotes: safeUsage || null });
+  audit('order', order.id, auditAction, { returnAdminStatus: order.returnAdminStatus, returnClosedAt: order.returnClosedAt }, { returnAdminStatus: finalStatus, returnClosedAt: closedAt, returnUsageNotes: safeUsage || null, returnAdminNotes: safeNotes || null });
   let postedMessage = null;
   const trimmedMessage = typeof message === 'string' ? message.trim() : '';
   if (trimmedMessage) {
@@ -1544,6 +1577,7 @@ app.post('/api/orders/:id/refund-response', requireAdmin, (req, res) => {
     notes: safeNotes || null,
     respondedAt: now,
     usageNotes: safeUsage || null,
+    closedAt,
     message: postedMessage
   });
 });
@@ -1645,7 +1679,7 @@ app.get('/api/my-orders', (req, res) => {
   }
   const email = session.user.email.trim().toLowerCase();
   if (!email) return res.status(401).json({ error: 'Sign-in required' });
-  const rows = db.prepare('SELECT id,status,createdAt,paidAt,fulfilledAt,shippedAt,cancelledAt,completedAt,returnRequestedAt,returnReason,returnAdminStatus,returnAdminRespondedAt,subtotalCents,discountCents,totalCents,shippingCents,shippingDiscountCents,discountCode,shippingCode FROM orders WHERE LOWER(customerEmail)=LOWER(?) ORDER BY createdAt DESC LIMIT 200').all(email);
+  const rows = db.prepare('SELECT id,status,createdAt,paidAt,fulfilledAt,shippedAt,cancelledAt,completedAt,returnRequestedAt,returnReason,returnAdminStatus,returnAdminRespondedAt,returnClosedAt,subtotalCents,discountCents,totalCents,shippingCents,shippingDiscountCents,discountCode,shippingCode FROM orders WHERE LOWER(customerEmail)=LOWER(?) ORDER BY createdAt DESC LIMIT 200').all(email);
   res.json({ orders: rows });
 });
 
