@@ -3773,11 +3773,8 @@ h6 {
 }
 
 .pv-media-card {
-  background: rgba(255, 255, 255, .95);
   border-radius: 36px;
   padding: clamp(1rem, 2vw, 1.8rem);
-  border: 1px solid rgba(148, 163, 184, .25);
-  box-shadow: 0 50px 100px -70px rgba(15, 23, 42, .6);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -6412,7 +6409,7 @@ body[data-route="admin"] .admin-section-btn:focus-visible {
 }
 
 .admin-order-actions-wrap [data-order-action="cancel"] {
-  background: #dc2626;
+  background: #b91c1c;
   color: #fff;
 }
 
@@ -6929,7 +6926,6 @@ body[data-route="admin"] .admin-table td .btn-compact {
 }
 
 .admin-actions-stack--restore {
-  background: rgba(22, 163, 74, .08);
   border-color: rgba(22, 163, 74, .18);
 }
 
