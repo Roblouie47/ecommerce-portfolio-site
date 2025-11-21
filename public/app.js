@@ -187,7 +187,14 @@
             discounts: [],
             lowStock: [],
             reviews: { status: 'pending', items: [] },
-            refundThreads: new Map()
+            refundThreads: new Map(),
+            analytics: {
+                rangeDays: 30,
+                merch: null,
+                promos: null,
+                loading: { merch: false, promos: false },
+                errors: { merch: null, promos: null }
+            }
         },
         customer: (function () {
             try {
@@ -1885,6 +1892,86 @@
         }
     }
 
+    function ensureAnalyticsState() {
+        if (!state.admin.analytics) {
+            state.admin.analytics = {
+                rangeDays: 30,
+                merch: null,
+                promos: null,
+                loading: { merch: false, promos: false },
+                errors: { merch: null, promos: null }
+            };
+        }
+        return state.admin.analytics;
+    }
+
+    function clampClientRangeDays(value, fallback = 30) {
+        const parsed = parseInt(value, 10);
+        if (!Number.isFinite(parsed)) return fallback;
+        return Math.min(Math.max(parsed, 1), 365);
+    }
+
+    async function loadMerchAnalytics(rangeDays) {
+        const analyticsState = ensureAnalyticsState();
+        if (!state.admin.token || !state.admin.user) {
+            analyticsState.merch = null;
+            return;
+        }
+        const range = clampClientRangeDays(rangeDays ?? analyticsState.rangeDays ?? 30, 30);
+        analyticsState.loading.merch = true;
+        refreshAnalyticsPanel();
+        try {
+            const data = await apiFetch(`/api/admin/analytics/merch?rangeDays=${range}&compareDays=${range}`);
+            analyticsState.merch = data;
+            analyticsState.errors.merch = null;
+        } catch (err) {
+            analyticsState.errors.merch = err.message || 'Unable to load merchandising insights';
+        } finally {
+            analyticsState.loading.merch = false;
+            refreshAnalyticsPanel();
+        }
+    }
+
+    async function loadPromoAnalytics(rangeDays) {
+        const analyticsState = ensureAnalyticsState();
+        if (!state.admin.token || !state.admin.user) {
+            analyticsState.promos = null;
+            return;
+        }
+        const range = clampClientRangeDays(rangeDays ?? analyticsState.rangeDays ?? 30, 30);
+        analyticsState.loading.promos = true;
+        refreshAnalyticsPanel();
+        try {
+            const data = await apiFetch(`/api/admin/analytics/promos?rangeDays=${range}`);
+            analyticsState.promos = data;
+            analyticsState.errors.promos = null;
+        } catch (err) {
+            analyticsState.errors.promos = err.message || 'Unable to load promo analytics';
+        } finally {
+            analyticsState.loading.promos = false;
+            refreshAnalyticsPanel();
+        }
+    }
+
+    async function hydrateAnalytics({ force = false } = {}) {
+        const analyticsState = ensureAnalyticsState();
+        if (!state.admin.token || !state.admin.user) {
+            analyticsState.merch = null;
+            analyticsState.promos = null;
+            refreshAnalyticsPanel();
+            return;
+        }
+        const range = analyticsState.rangeDays || 30;
+        const tasks = [];
+        if (force || !analyticsState.merch) tasks.push(loadMerchAnalytics(range));
+        if (force || !analyticsState.promos) tasks.push(loadPromoAnalytics(range));
+        if (tasks.length) {
+            await Promise.all(tasks);
+        } else {
+            refreshAnalyticsPanel();
+        }
+    }
+
     async function createProduct(payload) {
         return apiFetch('/api/products', {
             method: 'POST',
@@ -2524,7 +2611,7 @@
         const header = el('header', { class: 'catalog-page-header' },
             el('div', {},
                 el('h1', { class: 'catalog-page-title' }, 'Product Catalog'),
-                el('p', { class: 'catalog-page-subtitle muted' }, 'Discover our curated collection of modern furniture and decor')
+                el('p', { class: 'catalog-page-subtitle muted' }, 'Discover our curated collection of clothes designed for comfort and style.')
             )
         );
         page.appendChild(header);
@@ -5597,6 +5684,7 @@
         const sectionDefs = [
             { key: 'products', label: 'Products' },
             { key: 'orders', label: 'Orders' },
+            { key: 'analytics', label: 'Analytics' },
             { key: 'refunds', label: 'Refunds' },
             { key: 'reviews', label: 'Reviews Moderation' },
             { key: 'discounts', label: 'Discounts' },
@@ -5636,6 +5724,9 @@
                 if (key === activeKey) node.classList.remove('hidden');
                 else node.classList.add('hidden');
             });
+            if (activeKey === 'analytics') {
+                hydrateAnalytics().catch(err => console.warn('analytics hydrate failed', err));
+            }
         }
 
         sectionDefs.forEach(({ key, label }) => {
@@ -5666,6 +5757,99 @@
                 clearAdminAuth(true);
             });
         }
+        const analyticsPanel = el('div', { class: 'panel admin-analytics-panel mt-md', attrs: { 'data-admin-section': 'analytics' } },
+            el('div', { class: 'panel-header admin-analytics-header' },
+                el('span', {}, 'Analytics'),
+                el('div', { class: 'inline-fields analytics-controls' },
+                    (function () {
+                        const wrapLabel = el('label', { class: 'analytics-range-select-label tiny', attrs: { for: 'analytics-range-select' } }, 'Range');
+                        const sel = el('select', { attrs: { id: 'analytics-range-select' } },
+                            el('option', { attrs: { value: '7' } }, '7 days'),
+                            el('option', { attrs: { value: '14' } }, '14 days'),
+                            el('option', { attrs: { value: '30' } }, '30 days'),
+                            el('option', { attrs: { value: '60' } }, '60 days'),
+                            el('option', { attrs: { value: '90' } }, '90 days')
+                        );
+                        wrapLabel.appendChild(sel);
+                        return wrapLabel;
+                    })(),
+                    el('button', { class: 'btn btn-small btn-outline', attrs: { type: 'button', id: 'analytics-refresh-btn' } }, 'Refresh')
+                )
+            ),
+            el('div', { class: 'analytics-range-label tiny muted', attrs: { id: 'analytics-range-label' } }, 'Merchandising KPIs, inventory alerts, promo lift.'),
+            el('div', { class: 'analytics-status tiny', attrs: { id: 'analytics-status' } }),
+            el('div', { class: 'analytics-metrics-grid', attrs: { id: 'analytics-metrics-grid' } }),
+            el('div', { class: 'analytics-two-col' },
+                el('section', { class: 'analytics-card' },
+                    el('div', { class: 'analytics-card-head' },
+                        el('span', { class: 'analytics-card-title' }, 'Top movers'),
+                        el('span', { class: 'analytics-card-meta tiny muted', attrs: { id: 'analytics-top-products-meta' } })
+                    ),
+                    el('div', { class: 'analytics-card-body analytics-list', attrs: { id: 'analytics-top-products' } })
+                ),
+                el('section', { class: 'analytics-card' },
+                    el('div', { class: 'analytics-card-head' },
+                        el('span', { class: 'analytics-card-title' }, 'Category mix'),
+                        el('span', { class: 'analytics-card-meta tiny muted', attrs: { id: 'analytics-categories-meta' } })
+                    ),
+                    el('div', { class: 'analytics-card-body analytics-list', attrs: { id: 'analytics-category-list' } })
+                )
+            ),
+            el('div', { class: 'analytics-two-col' },
+                el('section', { class: 'analytics-card' },
+                    el('div', { class: 'analytics-card-head' },
+                        el('span', { class: 'analytics-card-title' }, 'Low stock alerts'),
+                        el('span', { class: 'analytics-card-meta tiny muted' }, '≤5 units')
+                    ),
+                    el('div', { class: 'analytics-card-body analytics-list', attrs: { id: 'analytics-low-stock' } })
+                ),
+                el('section', { class: 'analytics-card' },
+                    el('div', { class: 'analytics-card-head' },
+                        el('span', { class: 'analytics-card-title' }, 'Promo top codes'),
+                        el('span', { class: 'analytics-card-meta tiny muted', attrs: { id: 'promo-topcodes-meta' } })
+                    ),
+                    el('div', { class: 'analytics-card-body analytics-list', attrs: { id: 'promo-top-discounts' } })
+                )
+            ),
+            el('section', { class: 'analytics-card analytics-heatmap-card' },
+                el('div', { class: 'analytics-card-head' },
+                    el('span', { class: 'analytics-card-title' }, 'Promo heatmap'),
+                    el('span', { class: 'analytics-card-meta tiny muted' }, 'Conversions by hour/day')
+                ),
+                el('div', { class: 'analytics-heatmap-wrap' },
+                    el('div', { class: 'promo-heatmap-grid', attrs: { id: 'promo-heatmap-grid' } })
+                ),
+                el('div', { class: 'promo-timeline', attrs: { id: 'promo-timeline' } })
+            )
+        );
+        rootEl.appendChild(analyticsPanel);
+        sectionRefs.set('analytics', analyticsPanel);
+
+        const analyticsRangeSelect = analyticsPanel.querySelector('#analytics-range-select');
+        if (analyticsRangeSelect) {
+            analyticsRangeSelect.value = String(ensureAnalyticsState().rangeDays);
+            analyticsRangeSelect.addEventListener('change', async () => {
+                const analyticsState = ensureAnalyticsState();
+                analyticsState.rangeDays = clampClientRangeDays(analyticsRangeSelect.value, analyticsState.rangeDays || 30);
+                await hydrateAnalytics({ force: true });
+            });
+        }
+        const analyticsRefreshBtn = analyticsPanel.querySelector('#analytics-refresh-btn');
+        if (analyticsRefreshBtn) {
+            analyticsRefreshBtn.addEventListener('click', async () => {
+                analyticsRefreshBtn.disabled = true;
+                try {
+                    await hydrateAnalytics({ force: true });
+                } catch (err) {
+                    console.warn('analytics refresh failed', err);
+                } finally {
+                    analyticsRefreshBtn.disabled = false;
+                }
+            });
+        }
+
+        refreshAnalyticsPanel();
+
         const prodWrap = el('div', { class: 'panel mt-md', attrs: { 'data-admin-section': 'products' } },
             el('div', { class: 'panel-header' },
                 el('span', {}, 'Products'),
@@ -5702,7 +5886,6 @@
         const ordersWrap = el('div', { class: 'panel admin-orders-panel mt-md', attrs: { 'data-admin-section': 'orders' } },
             el('div', { class: 'panel-header admin-orders-header' },
                 el('div', { class: 'flex flex-col gap-xxs' },
-                    el('span', { class: 'pv-eyebrow tiny muted' }, 'Operations'),
                     el('span', { class: 'admin-orders-title' }, 'Orders overview')
                 ),
                 el('div', { class: 'inline-fields' },
@@ -5718,7 +5901,6 @@
         const refundsPanel = el('div', { class: 'panel admin-refunds-panel mt-md', attrs: { 'data-admin-section': 'refunds' } },
             el('div', { class: 'panel-header admin-refunds-header' },
                 el('div', { class: 'flex flex-col gap-xxs' },
-                    el('span', { class: 'pv-eyebrow tiny muted' }, 'Support'),
                     el('span', { class: 'admin-refunds-title' }, 'Refund requests')
                 ),
                 el('div', { class: 'inline-fields' },
@@ -6964,6 +7146,189 @@
             return;
         }
         state.admin.lowStock.forEach(p => tbody.appendChild(el('tr', {}, el('td', {}, p.title), el('td', {}, String(p.totalInventory)), el('td', {}, money(p.priceCents)))));
+    }
+
+    function refreshAnalyticsPanel() {
+        const analyticsState = ensureAnalyticsState();
+        const statusEl = document.getElementById('analytics-status');
+        const statusParts = [];
+        if (analyticsState.loading.merch || analyticsState.loading.promos) statusParts.push('Loading insights…');
+        if (analyticsState.errors.merch) statusParts.push('Merch: ' + analyticsState.errors.merch);
+        if (analyticsState.errors.promos) statusParts.push('Promos: ' + analyticsState.errors.promos);
+        if (statusEl) {
+            statusEl.textContent = statusParts.join(' · ');
+            statusEl.classList.toggle('hidden', statusParts.length === 0);
+        }
+
+        const rangeLabelEl = document.getElementById('analytics-range-label');
+        if (rangeLabelEl) {
+            if (analyticsState.merch?.range) {
+                const { range } = analyticsState.merch;
+                const start = range.start ? new Date(range.start).toLocaleDateString() : '';
+                const end = range.end ? new Date(range.end).toLocaleDateString() : '';
+                rangeLabelEl.textContent = `Last ${range.days} days · ${start} – ${end}`;
+            } else {
+                rangeLabelEl.textContent = 'Pick a range to load merchandising analytics.';
+            }
+        }
+
+        const metricsGrid = document.getElementById('analytics-metrics-grid');
+        if (metricsGrid) {
+            metricsGrid.innerHTML = '';
+            if (analyticsState.loading.merch) {
+                metricsGrid.appendChild(el('p', { class: 'tiny muted' }, 'Loading merchandising KPIs…'));
+            } else if (!analyticsState.merch) {
+                metricsGrid.appendChild(el('p', { class: 'tiny muted' }, 'No data yet. Refresh to pull analytics.'));
+            } else {
+                const { totals, velocity } = analyticsState.merch;
+                const fmtDelta = (val) => val == null ? '—' : `${val >= 0 ? '+' : ''}${val.toFixed(1)}%`;
+                const metrics = [
+                    { label: 'Revenue', value: money(totals.revenueCents), delta: velocity?.revenueChangePct },
+                    { label: 'Orders', value: totals.totalOrders?.toLocaleString?.() || String(totals.totalOrders || 0), delta: velocity?.ordersChangePct },
+                    { label: 'Avg order', value: money(totals.avgOrderValueCents) },
+                    { label: 'Units sold', value: (totals.unitsSold || 0).toLocaleString() },
+                    { label: 'Discount capture', value: (totals.discountCaptureRatePct || 0).toFixed(1) + '%' },
+                    { label: 'Net sales', value: money(totals.netSalesCents) }
+                ];
+                metrics.forEach(metric => {
+                    const card = el('div', { class: 'analytics-metric-card' },
+                        el('span', { class: 'analytics-metric-label tiny muted' }, metric.label),
+                        el('strong', { class: 'analytics-metric-value' }, metric.value)
+                    );
+                    if (metric.delta != null) {
+                        const deltaClass = metric.delta >= 0 ? 'pos' : 'neg';
+                        card.appendChild(el('span', { class: 'analytics-metric-delta ' + deltaClass }, fmtDelta(metric.delta)));
+                    }
+                    metricsGrid.appendChild(card);
+                });
+            }
+        }
+
+        const renderList = (containerId, items, emptyText) => {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            container.innerHTML = '';
+            if (!items || !items.length) {
+                container.appendChild(el('p', { class: 'tiny muted' }, emptyText));
+                return;
+            }
+            items.forEach(node => container.appendChild(node));
+        };
+
+        const topProductNodes = analyticsState.merch?.topProducts?.map((product) => {
+            const badgeText = product.inventoryRemaining == null ? '—' : `${product.inventoryRemaining} left`;
+            return el('div', { class: 'analytics-list-row' },
+                el('div', { class: 'analytics-list-main' },
+                    el('span', { class: 'analytics-list-title' }, product.title),
+                    el('span', { class: 'analytics-list-sub tiny muted' }, `${product.unitsSold} units · ${money(product.revenueCents)}`)
+                ),
+                el('span', { class: 'analytics-pill ' + (product.stockHealth || 'unknown') }, badgeText)
+            );
+        });
+        renderList('analytics-top-products', topProductNodes, analyticsState.loading.merch ? 'Calculating top products…' : 'No product movement in this range.');
+
+        const categoryNodes = analyticsState.merch?.categoryBreakdown?.map(entry => {
+            const share = entry.sharePct ? entry.sharePct.toFixed(1) + '%' : '—';
+            return el('div', { class: 'analytics-list-row' },
+                el('div', { class: 'analytics-list-main' },
+                    el('span', { class: 'analytics-list-title' }, entry.label || 'Category'),
+                    el('span', { class: 'analytics-list-sub tiny muted' }, `${entry.unitsSold || 0} units`)
+                ),
+                el('span', { class: 'analytics-pill neutral' }, share)
+            );
+        });
+        const categoriesMetaEl = document.getElementById('analytics-categories-meta');
+        if (categoriesMetaEl) {
+            categoriesMetaEl.textContent = analyticsState.merch?.categoryBreakdown?.length ? 'Revenue share' : '';
+        }
+        renderList('analytics-category-list', categoryNodes, analyticsState.loading.merch ? 'Crunching categories…' : 'No categorized sales in this range.');
+
+        const lowStockNodes = analyticsState.merch?.lowStock?.products?.map(item => {
+            const severityClass = ({
+                low: 'risk',
+                critical: 'critical',
+                out: 'critical',
+                watch: 'watch'
+            })[item.severity] || 'neutral';
+            return el('div', { class: 'analytics-list-row' },
+                el('div', { class: 'analytics-list-main' },
+                    el('span', { class: 'analytics-list-title' }, item.title),
+                    el('span', { class: 'analytics-list-sub tiny muted' }, money(item.priceCents))
+                ),
+                el('span', { class: 'analytics-pill ' + severityClass }, `${item.totalInventory} left`)
+            );
+        });
+        renderList('analytics-low-stock', lowStockNodes, analyticsState.loading.merch ? 'Checking stock…' : 'All tracked products look healthy.');
+
+        const promoNodes = analyticsState.promos?.topDiscounts?.slice(0, 6).map(entry => {
+            const share = entry.sharePct ? entry.sharePct.toFixed(1) + '%' : '—';
+            const metaBits = [`${entry.orders} orders`, money(entry.revenueCents)];
+            if (entry.type) metaBits.push(entry.type);
+            return el('div', { class: 'analytics-list-row' },
+                el('div', { class: 'analytics-list-main' },
+                    el('span', { class: 'analytics-list-title' }, entry.code || '—'),
+                    el('span', { class: 'analytics-list-sub tiny muted' }, metaBits.join(' · '))
+                ),
+                el('span', { class: 'analytics-pill neutral' }, share)
+            );
+        });
+        renderList('promo-top-discounts', promoNodes, analyticsState.loading.promos ? 'Summarizing promo usage…' : 'No discount usage recorded.');
+
+        const topMeta = document.getElementById('analytics-top-products-meta');
+        if (topMeta) {
+            topMeta.textContent = analyticsState.merch?.topProducts?.length ? 'Inventory risk + revenue' : '';
+        }
+        const promoMeta = document.getElementById('promo-topcodes-meta');
+        if (promoMeta) {
+            const orders = analyticsState.promos?.totals?.orders || 0;
+            promoMeta.textContent = orders ? `${orders} orders with codes` : '';
+        }
+
+        const heatmapContainer = document.getElementById('promo-heatmap-grid');
+        if (heatmapContainer) {
+            heatmapContainer.innerHTML = '';
+            const heatmapData = analyticsState.promos?.heatmap;
+            if (!heatmapData || !Array.isArray(heatmapData.grid) || !heatmapData.grid.length) {
+                heatmapContainer.appendChild(el('p', { class: 'tiny muted' }, analyticsState.loading.promos ? 'Loading heatmap…' : 'No promo redemptions in this window.'));
+            } else {
+                heatmapData.grid.forEach(row => {
+                    const rowEl = el('div', { class: 'heatmap-row' },
+                        el('span', { class: 'heatmap-label tiny muted' }, row.label || '—')
+                    );
+                    const hours = Array.isArray(row.hours) ? row.hours : [];
+                    hours.forEach(cell => {
+                        const max = heatmapData.maxCount || 0;
+                        const intensity = max > 0 ? Math.min(1, (cell.count || 0) / max) : 0;
+                        rowEl.appendChild(el('span', {
+                            class: 'heatmap-cell',
+                            attrs: {
+                                'data-count': cell.count || 0,
+                                'aria-label': `${row.label || 'Day'} hour ${cell.hour}: ${cell.count || 0} orders`,
+                                style: `--heat:${intensity.toFixed(2)}`
+                            }
+                        }, cell.count ? String(cell.count) : ''));
+                    });
+                    heatmapContainer.appendChild(rowEl);
+                });
+            }
+        }
+
+        const timelineEl = document.getElementById('promo-timeline');
+        if (timelineEl) {
+            timelineEl.innerHTML = '';
+            const rows = analyticsState.promos?.timeline?.slice(-8).reverse();
+            if (!rows || !rows.length) {
+                timelineEl.appendChild(el('p', { class: 'tiny muted' }, analyticsState.loading.promos ? 'Loading promo timeline…' : 'No promo activity yet.'));
+            } else {
+                rows.forEach(row => {
+                    timelineEl.appendChild(el('div', { class: 'timeline-row' },
+                        el('span', { class: 'timeline-date tiny muted' }, row.day ? new Date(row.day + 'T00:00:00Z').toLocaleDateString() : '—'),
+                        el('span', { class: 'timeline-orders' }, `${row.orders} orders`),
+                        el('span', { class: 'timeline-revenue' }, money(row.revenueCents))
+                    ));
+                });
+            }
+        }
     }
     function showDiscountModal(existing) {
         showModal(close => {

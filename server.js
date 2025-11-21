@@ -11,7 +11,7 @@ const { v4: uuid } = require('uuid');
 const { PORT, ADMIN_TOKEN, ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME, STRIPE_SECRET, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE, PUBLIC_URL, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE, EMAIL_FROM, EMAIL_DEV_MODE, EMAIL_DEV_RECIPIENT } = require('./src/config/env');
 const { isAdmin, requireAdmin } = require('./src/middleware/admin');
 const db = require('./src/db');
-const { parseJSONField, validateProductInput, validateVariant, buildProductRow, computeCartTotals, getReviewSummary } = require('./src/utils');
+const { parseJSONField, validateProductInput, validateVariant, buildProductRow, computeCartTotals, getReviewSummary, computeProductInventory } = require('./src/utils');
 const { v4: uuidv4 } = require('uuid');
 
 const stripe = STRIPE_SECRET ? require('stripe')(STRIPE_SECRET, { apiVersion: '2023-10-16' }) : null;
@@ -261,6 +261,326 @@ const selectOrderForReviewStmt = db.prepare('SELECT id, status, customerEmail, p
 const selectOrderItemsForReviewStmt = db.prepare('SELECT productId, variantId, quantity FROM order_items WHERE orderId = ? AND productId = ?');
 const insertRefundMessageStmt = db.prepare('INSERT INTO refund_messages (id, orderId, authorRole, authorName, authorEmail, body, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)');
 const selectRefundMessagesStmt = db.prepare('SELECT id, orderId, authorRole, authorName, authorEmail, body, createdAt FROM refund_messages WHERE orderId=? ORDER BY createdAt ASC');
+
+// Analytics helpers
+const merchTotalsStmt = db.prepare(`
+  SELECT
+    SUM(CASE WHEN cancelledAt IS NULL THEN 1 ELSE 0 END) AS totalOrders,
+    SUM(CASE WHEN cancelledAt IS NULL THEN totalCents ELSE 0 END) AS revenueCents,
+    SUM(CASE WHEN cancelledAt IS NULL THEN subtotalCents ELSE 0 END) AS subtotalCents,
+    SUM(CASE WHEN cancelledAt IS NULL THEN discountCents ELSE 0 END) AS discountCents,
+    SUM(CASE WHEN cancelledAt IS NULL THEN shippingCents - shippingDiscountCents ELSE 0 END) AS netShippingCents,
+    SUM(CASE WHEN cancelledAt IS NULL AND (paidAt IS NOT NULL OR status IN ('paid','fulfilled','shipped','completed')) THEN 1 ELSE 0 END) AS completedOrders
+  FROM orders
+  WHERE createdAt >= ? AND createdAt < ?
+`);
+const merchUnitsStmt = db.prepare(`
+  SELECT SUM(oi.quantity) AS unitsSold
+  FROM order_items oi
+  JOIN orders o ON o.id = oi.orderId
+  WHERE o.createdAt >= ? AND o.createdAt < ? AND o.cancelledAt IS NULL
+`);
+const merchTopProductsStmt = db.prepare(`
+  SELECT
+    CASE WHEN oi.productId IS NULL OR oi.productId = '' THEN 'legacy:' || COALESCE(oi.titleSnapshot, oi.id)
+         ELSE oi.productId END AS productKey,
+    oi.productId AS productId,
+    COALESCE(p.title, oi.titleSnapshot, 'Unknown product') AS title,
+    SUM(oi.quantity) AS unitsSold,
+    SUM(oi.quantity * oi.unitPriceCents) AS revenueCents,
+    COALESCE(p.tags, '[]') AS tagsJson
+  FROM order_items oi
+  JOIN orders o ON o.id = oi.orderId
+  LEFT JOIN products p ON p.id = oi.productId
+  WHERE o.createdAt >= ? AND o.createdAt < ? AND o.cancelledAt IS NULL
+  GROUP BY productKey, oi.productId, title, tagsJson
+  ORDER BY revenueCents DESC
+  LIMIT 40
+`);
+const merchHourlyStmt = db.prepare(`
+  SELECT strftime('%H', createdAt) AS hourBucket, COUNT(*) AS orderCount
+  FROM orders
+  WHERE createdAt >= ? AND createdAt < ? AND cancelledAt IS NULL
+  GROUP BY hourBucket
+  ORDER BY hourBucket ASC
+`);
+const merchTagBucketsStmt = db.prepare(`
+  SELECT COALESCE(p.tags, '[]') AS tagsJson, SUM(oi.quantity) AS unitsSold, SUM(oi.quantity * oi.unitPriceCents) AS revenueCents
+  FROM order_items oi
+  JOIN orders o ON o.id = oi.orderId
+  LEFT JOIN products p ON p.id = oi.productId
+  WHERE o.createdAt >= ? AND o.createdAt < ? AND o.cancelledAt IS NULL
+  GROUP BY tagsJson
+`);
+const lowStockSnapshotStmt = db.prepare(`
+  SELECT p.id, p.title, p.priceCents,
+    COALESCE((SELECT SUM(v.inventory) FROM variants v WHERE v.productId = p.id), p.baseInventory, 0) AS totalInventory
+  FROM products p
+  WHERE p.deletedAt IS NULL
+  ORDER BY totalInventory ASC, p.updatedAt DESC
+  LIMIT ?
+`);
+const promoTopCodesStmt = db.prepare(`
+  SELECT UPPER(o.discountCode) AS code,
+    COUNT(*) AS orderCount,
+    SUM(o.totalCents) AS revenueCents,
+    SUM(o.discountCents) AS discountCents,
+    AVG(o.totalCents) AS averageOrderCents,
+    d.type AS discountType,
+    d.value AS discountValue,
+    d.minSubtotalCents AS minSubtotalCents
+  FROM orders o
+  LEFT JOIN discounts d ON d.code = UPPER(o.discountCode)
+  WHERE o.createdAt >= ? AND o.createdAt < ? AND o.cancelledAt IS NULL AND o.discountCode IS NOT NULL AND o.discountCode <> ''
+  GROUP BY code
+  ORDER BY orderCount DESC
+  LIMIT 20
+`);
+const promoTotalsStmt = db.prepare(`
+  SELECT COUNT(*) AS orderCount, SUM(totalCents) AS revenueCents, SUM(discountCents) AS discountCents
+  FROM orders
+  WHERE createdAt >= ? AND createdAt < ? AND cancelledAt IS NULL AND discountCode IS NOT NULL AND discountCode <> ''
+`);
+const promoHeatmapStmt = db.prepare(`
+  SELECT strftime('%w', o.createdAt) AS dow, strftime('%H', o.createdAt) AS hourBucket,
+    COUNT(*) AS orderCount, SUM(o.totalCents) AS revenueCents
+  FROM orders o
+  WHERE o.createdAt >= ? AND o.createdAt < ? AND o.cancelledAt IS NULL AND o.discountCode IS NOT NULL AND o.discountCode <> ''
+  GROUP BY dow, hourBucket
+`);
+const promoTimelineStmt = db.prepare(`
+  SELECT substr(o.createdAt, 1, 10) AS dayBucket,
+    COUNT(*) AS orderCount,
+    SUM(o.totalCents) AS revenueCents,
+    SUM(o.discountCents) AS discountCents
+  FROM orders o
+  WHERE o.createdAt >= ? AND o.createdAt < ? AND o.cancelledAt IS NULL AND o.discountCode IS NOT NULL AND o.discountCode <> ''
+  GROUP BY dayBucket
+  ORDER BY dayBucket ASC
+`);
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DOW_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function clampRangeDays(value, fallback = 30) {
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(parsed, 1), 365);
+}
+
+function safeNumber(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : 0;
+}
+
+function percentChange(current, previous) {
+  const curr = safeNumber(current);
+  const prev = safeNumber(previous);
+  if (prev <= 0) return null;
+  return ((curr - prev) / prev) * 100;
+}
+
+function buildMerchAnalytics(rangeDays = 30, compareDays = rangeDays) {
+  const range = clampRangeDays(rangeDays, 30);
+  const comparison = clampRangeDays(compareDays, range);
+  const now = Date.now();
+  const end = new Date(now);
+  const start = new Date(now - range * DAY_MS);
+  const compareEnd = new Date(start.getTime());
+  const compareStart = new Date(compareEnd.getTime() - comparison * DAY_MS);
+  const startIso = start.toISOString();
+  const endIso = end.toISOString();
+  const compareStartIso = compareStart.toISOString();
+  const compareEndIso = compareEnd.toISOString();
+  const totals = merchTotalsStmt.get(startIso, endIso) || {};
+  const compareTotals = merchTotalsStmt.get(compareStartIso, compareEndIso) || {};
+  const unitsRow = merchUnitsStmt.get(startIso, endIso) || {};
+  const hourlyRows = merchHourlyStmt.all(startIso, endIso);
+  const productRows = merchTopProductsStmt.all(startIso, endIso);
+  const tagRows = merchTagBucketsStmt.all(startIso, endIso);
+  const lowStockRows = lowStockSnapshotStmt.all(6) || [];
+
+  const revenueCents = safeNumber(totals.revenueCents);
+  const subtotalCents = safeNumber(totals.subtotalCents);
+  const discountCents = safeNumber(totals.discountCents);
+  const netShippingCents = safeNumber(totals.netShippingCents);
+  const totalOrders = safeNumber(totals.totalOrders);
+  const completedOrders = safeNumber(totals.completedOrders);
+  const totalUnits = safeNumber(unitsRow.unitsSold);
+  const avgOrderValueCents = completedOrders > 0 ? Math.round(revenueCents / completedOrders) : 0;
+  const discountCaptureRatePct = subtotalCents > 0 ? (discountCents / subtotalCents) * 100 : 0;
+  const netSalesCents = Math.max(0, revenueCents - netShippingCents);
+  const revenueChangePct = percentChange(revenueCents, compareTotals.revenueCents);
+  const ordersChangePct = percentChange(totalOrders, compareTotals.totalOrders);
+
+  const hourly = Array.from({ length: 24 }, (_, hour) => ({ hour, orders: 0 }));
+  for (const row of hourlyRows) {
+    const rawHour = Number(row.hourBucket);
+    if (!Number.isFinite(rawHour)) continue;
+    const hourIdx = Math.max(0, Math.min(23, Math.trunc(rawHour)));
+    hourly[hourIdx].orders = safeNumber(row.orderCount);
+  }
+
+  const topProducts = productRows.slice(0, 6).map(row => {
+    let inventoryRemaining = null;
+    if (row.productId) {
+      try { inventoryRemaining = computeProductInventory(row.productId); } catch { inventoryRemaining = null; }
+    }
+    let stockHealth = 'unknown';
+    if (inventoryRemaining == null) stockHealth = 'unknown';
+    else if (inventoryRemaining <= 0) stockHealth = 'out';
+    else if (inventoryRemaining < 6) stockHealth = 'low';
+    else stockHealth = 'healthy';
+    const unitsSold = safeNumber(row.unitsSold);
+    return {
+      id: row.productId || row.productKey,
+      title: row.title,
+      unitsSold,
+      revenueCents: safeNumber(row.revenueCents),
+      sharePct: totalUnits > 0 ? (unitsSold / totalUnits) * 100 : 0,
+      inventoryRemaining,
+      stockHealth
+    };
+  });
+
+  const tagTotals = new Map();
+  for (const row of tagRows) {
+    let tags = [];
+    try { tags = JSON.parse(row.tagsJson); } catch { tags = []; }
+    const clean = Array.isArray(tags) ? tags.filter(Boolean).slice(0, 4) : [];
+    for (const tag of clean) {
+      const key = String(tag).toLowerCase();
+      if (!tagTotals.has(key)) {
+        tagTotals.set(key, { label: tag, revenueCents: 0, unitsSold: 0 });
+      }
+      const bucket = tagTotals.get(key);
+      bucket.revenueCents += safeNumber(row.revenueCents);
+      bucket.unitsSold += safeNumber(row.unitsSold);
+    }
+  }
+  const categoryBreakdown = Array.from(tagTotals.values())
+    .sort((a, b) => b.revenueCents - a.revenueCents)
+    .slice(0, 6)
+    .map(entry => ({
+      label: entry.label,
+      revenueCents: entry.revenueCents,
+      unitsSold: entry.unitsSold,
+      sharePct: revenueCents > 0 ? (entry.revenueCents / revenueCents) * 100 : 0
+    }));
+
+  const lowStock = lowStockRows.map(row => {
+    const totalInventory = safeNumber(row.totalInventory);
+    let severity = 'watch';
+    if (totalInventory <= 0) severity = 'out';
+    else if (totalInventory <= 2) severity = 'critical';
+    else if (totalInventory <= 5) severity = 'low';
+    return {
+      id: row.id,
+      title: row.title,
+      totalInventory,
+      priceCents: row.priceCents,
+      severity
+    };
+  });
+
+  return {
+    range: { days: range, start: startIso, end: endIso },
+    compareRange: { days: comparison, start: compareStartIso, end: compareEndIso },
+    totals: {
+      revenueCents,
+      netSalesCents,
+      subtotalCents,
+      discountCents,
+      totalOrders,
+      completedOrders,
+      unitsSold: totalUnits,
+      avgOrderValueCents,
+      discountCaptureRatePct
+    },
+    velocity: {
+      revenueChangePct,
+      ordersChangePct
+    },
+    hourly,
+    topProducts,
+    categoryBreakdown,
+    lowStock: {
+      count: lowStock.length,
+      products: lowStock
+    },
+    generatedAt: new Date().toISOString()
+  };
+}
+
+function buildPromoAnalytics(rangeDays = 30) {
+  const range = clampRangeDays(rangeDays, 30);
+  const now = Date.now();
+  const end = new Date(now);
+  const start = new Date(now - range * DAY_MS);
+  const startIso = start.toISOString();
+  const endIso = end.toISOString();
+  const totals = promoTotalsStmt.get(startIso, endIso) || {};
+  const heatRows = promoHeatmapStmt.all(startIso, endIso);
+  const timelineRows = promoTimelineStmt.all(startIso, endIso);
+  const topCodeRows = promoTopCodesStmt.all(startIso, endIso);
+  const totalOrders = safeNumber(totals.orderCount);
+
+  const heatmap = Array.from({ length: 7 }, (_, day) => ({
+    day,
+    label: DOW_LABELS[day],
+    hours: Array.from({ length: 24 }, (_, hour) => ({ hour, count: 0, revenueCents: 0 }))
+  }));
+  let maxHeatCount = 0;
+  for (const row of heatRows) {
+    const rawDay = Number(row.dow);
+    const rawHour = Number(row.hourBucket);
+    if (!Number.isFinite(rawDay) || !Number.isFinite(rawHour)) continue;
+    const dayIdx = Math.max(0, Math.min(6, Math.trunc(rawDay)));
+    const hourIdx = Math.max(0, Math.min(23, Math.trunc(rawHour)));
+    const bucket = heatmap[dayIdx].hours[hourIdx];
+    bucket.count += safeNumber(row.orderCount);
+    bucket.revenueCents += safeNumber(row.revenueCents);
+    if (bucket.count > maxHeatCount) maxHeatCount = bucket.count;
+  }
+
+  const topDiscounts = topCodeRows.map(row => {
+    const orders = safeNumber(row.orderCount);
+    return {
+      code: row.code,
+      orders,
+      sharePct: totalOrders > 0 ? (orders / totalOrders) * 100 : 0,
+      revenueCents: safeNumber(row.revenueCents),
+      discountCents: safeNumber(row.discountCents),
+      avgOrderValueCents: Math.round(safeNumber(row.averageOrderCents)),
+      type: row.discountType || null,
+      value: row.discountValue != null ? row.discountValue : null,
+      minSubtotalCents: safeNumber(row.minSubtotalCents)
+    };
+  });
+
+  const timeline = timelineRows.map(row => ({
+    day: row.dayBucket,
+    orders: safeNumber(row.orderCount),
+    revenueCents: safeNumber(row.revenueCents),
+    discountCents: safeNumber(row.discountCents)
+  }));
+
+  return {
+    range: { days: range, start: startIso, end: endIso },
+    totals: {
+      orders: totalOrders,
+      revenueCents: safeNumber(totals.revenueCents),
+      discountCents: safeNumber(totals.discountCents)
+    },
+    topDiscounts,
+    heatmap: {
+      grid: heatmap,
+      maxCount: maxHeatCount
+    },
+    timeline,
+    generatedAt: new Date().toISOString()
+  };
+}
 
 // --- Lightweight one-time migrations (idempotent) ---
 try { db.prepare("ALTER TABLE orders ADD COLUMN shippingCents INTEGER DEFAULT 0").run(); } catch { }
@@ -1862,6 +2182,30 @@ app.post('/api/import/products', requireAdmin, uploadMemory.single('file'), (req
   });
   tx(lines);
   res.json({ imported: created, errors });
+});
+
+// ---------- Admin Analytics ----------
+app.get('/api/admin/analytics/merch', requireAdmin, (req, res) => {
+  try {
+    const rangeDays = clampRangeDays(req.query.rangeDays, 30);
+    const compareDays = clampRangeDays(req.query.compareDays != null ? req.query.compareDays : rangeDays, rangeDays);
+    const payload = buildMerchAnalytics(rangeDays, compareDays);
+    res.json(payload);
+  } catch (err) {
+    console.error('[analytics] merch error', err);
+    res.status(500).json({ error: 'Unable to build merchandising analytics' });
+  }
+});
+
+app.get('/api/admin/analytics/promos', requireAdmin, (req, res) => {
+  try {
+    const rangeDays = clampRangeDays(req.query.rangeDays, 30);
+    const payload = buildPromoAnalytics(rangeDays);
+    res.json(payload);
+  } catch (err) {
+    console.error('[analytics] promo error', err);
+    res.status(500).json({ error: 'Unable to build promo analytics' });
+  }
 });
 
 // ---------- Meta & Upload & Debug ----------
