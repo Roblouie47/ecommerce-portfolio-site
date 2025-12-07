@@ -931,6 +931,8 @@ body[data-route="product"] .panel.product-reviews-preview {
 .checkout-hero {
   display: flex;
   justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 1.25rem;
   padding-bottom: 1.2rem;
   border-bottom: 1px solid rgba(15, 23, 42, .08);
@@ -941,6 +943,8 @@ body[data-route="product"] .panel.product-reviews-preview {
   display: flex;
   flex-direction: column;
   gap: .4rem;
+  flex: 1 1 240px;
+  min-width: 220px;
 }
 
 .checkout-hero-badges {
@@ -996,6 +1000,8 @@ body[data-route="product"] .panel.product-reviews-preview {
   flex-direction: column;
   gap: .15rem;
   text-align: right;
+  flex: 0 0 auto;
+  align-self: center;
 }
 
 .checkout-hero-total .label {
@@ -1730,6 +1736,7 @@ body[data-route="order-confirmation"] {
 
   .checkout-hero-total {
     text-align: left;
+    align-self: stretch;
   }
 
   .checkout-summary-footer {

@@ -3164,7 +3164,6 @@
         const priceRow = el('div', { class: 'pv-price-row' },
             el('span', { class: 'pv-price', attrs: { 'data-price-cents': prod.priceCents } }, money(prod.priceCents)),
             stockChip,
-            el('span', { class: 'pv-meta-chip' }, 'Ships in 24h')
         );
 
         const infoNodes = [
@@ -4162,16 +4161,12 @@
                 wrap.querySelector('#checkout-loading')?.remove();
                 const heroTotalValue = el('span', { class: 'checkout-hero-total-amount' }, money(estSubtotal + estTax));
                 const heroBadges = el('div', { class: 'checkout-hero-badges' },
-                    el('span', { class: 'checkout-hero-badge' }, 'Ships in 24h'),
-                    el('span', { class: 'checkout-hero-badge' }, 'Free exchanges'),
                     el('span', { class: 'checkout-hero-badge' }, totalQuantity + (totalQuantity === 1 ? ' item' : ' items') + ' in bag')
                 );
                 const hero = el('div', { class: 'checkout-hero' },
                     el('div', { class: 'checkout-hero-copy' },
                         el('p', { class: 'checkout-eyebrow' }, 'Secure checkout'),
-                        el('h1', { class: 'checkout-hero-title' }, 'Almost there'),
                         heroBadges,
-                        el('p', { class: 'muted' }, 'Complete your delivery details and we will dispatch the order right away.')
                     ),
                     el('div', { class: 'checkout-hero-total' },
                         el('span', { class: 'label' }, 'Est. total'),
