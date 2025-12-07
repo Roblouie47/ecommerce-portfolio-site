@@ -3228,6 +3228,7 @@ h6 {
 /* Header country selector visibility */
 .header-country-select {
   appearance: none;
+  margin-left: 5px;
   background: #f8fafc;
   border: 1px solid rgba(15, 23, 42, .15);
   color: #111827;
