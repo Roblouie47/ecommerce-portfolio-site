@@ -6,12 +6,12 @@ services:
     region: oregon
     branch: main
     rootDir: .
-    buildCommand: npm install
+    buildCommand: npm install && npm rebuild better-sqlite3 --build-from-source
     startCommand: node server.js
     autoDeploy: true
     envVars:
       - key: NODE_VERSION
-        value: 18
+        value: 20.17.0
       - key: PORT
         value: 10000
       - key: ADMIN_TOKEN
