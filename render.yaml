@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: ecommerce-backend
+    env: node
+    plan: free
+    region: oregon
+    branch: main
+    rootDir: .
+    buildCommand: npm install && npm rebuild better-sqlite3 --build-from-source
+    startCommand: node server.js
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20.17.0
+      - key: PORT
+        value: 10000
+      - key: ADMIN_TOKEN
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: STRIPE_SECRET
+        sync: false
+      - key: STRIPE_PUBLISHABLE
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: PUBLIC_URL
+        sync: false

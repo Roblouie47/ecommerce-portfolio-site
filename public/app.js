@@ -187,7 +187,14 @@
             discounts: [],
             lowStock: [],
             reviews: { status: 'pending', items: [] },
-            refundThreads: new Map()
+            refundThreads: new Map(),
+            analytics: {
+                rangeDays: 30,
+                merch: null,
+                promos: null,
+                loading: { merch: false, promos: false },
+                errors: { merch: null, promos: null }
+            }
         },
         customer: (function () {
             try {
@@ -336,22 +343,16 @@
         let existing = document.getElementById('global-country-select');
         if (existing) return; // already added
         const wrap = document.createElement('div');
-    wrap.style.display = 'flex';
-    wrap.style.alignItems = 'center';
-    wrap.style.gap = '.4rem';
-    wrap.style.marginLeft = '1rem';
-    wrap.innerHTML = '<label style="font-size:.6rem;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:#1f2937;">Country</label>';
+        wrap.className = 'country-select-wrap';
+
+        const label = document.createElement('label');
+        label.className = 'country-select-label';
+        label.textContent = 'Country';
+        wrap.appendChild(label);
+
         const sel = document.createElement('select');
         sel.id = 'global-country-select';
-    sel.style.padding = '.35rem .6rem';
         sel.classList.add('header-country-select');
-        sel.style.fontSize = '.7rem';
-        sel.style.borderRadius = '4px';
-    sel.style.border = '1px solid rgba(17,24,39,.15)';
-    sel.style.background = '#f8fafc';
-    sel.style.color = '#111827';
-    sel.style.backdropFilter = 'none';
-        sel.style.minWidth = '140px';
         sel.style.zIndex = '500'; // ensure dropdown not hidden by other elements
         // Central country list so we can also reuse for checkout form later
         const COUNTRY_CHOICES = [
@@ -1815,6 +1816,14 @@
         return data;
     }
 
+    async function closeRefundCase(orderId, payload = {}) {
+        return respondToRefund(orderId, { ...payload, closeCase: true });
+    }
+
+    async function reopenRefundCase(orderId, payload = {}) {
+        return respondToRefund(orderId, { ...payload, reopenCase: true });
+    }
+
     function describeRefundUsage(order) {
         const requestedAt = order.returnRequestedAt ? new Date(order.returnRequestedAt) : null;
         const deliveredAt = order.completedAt ? new Date(order.completedAt) : (order.shippedAt ? new Date(order.shippedAt) : null);
@@ -1874,6 +1883,86 @@
             state.admin.lowStock = d.products;
         } catch {
             state.admin.lowStock = [];
+        }
+    }
+
+    function ensureAnalyticsState() {
+        if (!state.admin.analytics) {
+            state.admin.analytics = {
+                rangeDays: 30,
+                merch: null,
+                promos: null,
+                loading: { merch: false, promos: false },
+                errors: { merch: null, promos: null }
+            };
+        }
+        return state.admin.analytics;
+    }
+
+    function clampClientRangeDays(value, fallback = 30) {
+        const parsed = parseInt(value, 10);
+        if (!Number.isFinite(parsed)) return fallback;
+        return Math.min(Math.max(parsed, 1), 365);
+    }
+
+    async function loadMerchAnalytics(rangeDays) {
+        const analyticsState = ensureAnalyticsState();
+        if (!state.admin.token || !state.admin.user) {
+            analyticsState.merch = null;
+            return;
+        }
+        const range = clampClientRangeDays(rangeDays ?? analyticsState.rangeDays ?? 30, 30);
+        analyticsState.loading.merch = true;
+        refreshAnalyticsPanel();
+        try {
+            const data = await apiFetch(`/api/admin/analytics/merch?rangeDays=${range}&compareDays=${range}`);
+            analyticsState.merch = data;
+            analyticsState.errors.merch = null;
+        } catch (err) {
+            analyticsState.errors.merch = err.message || 'Unable to load merchandising insights';
+        } finally {
+            analyticsState.loading.merch = false;
+            refreshAnalyticsPanel();
+        }
+    }
+
+    async function loadPromoAnalytics(rangeDays) {
+        const analyticsState = ensureAnalyticsState();
+        if (!state.admin.token || !state.admin.user) {
+            analyticsState.promos = null;
+            return;
+        }
+        const range = clampClientRangeDays(rangeDays ?? analyticsState.rangeDays ?? 30, 30);
+        analyticsState.loading.promos = true;
+        refreshAnalyticsPanel();
+        try {
+            const data = await apiFetch(`/api/admin/analytics/promos?rangeDays=${range}`);
+            analyticsState.promos = data;
+            analyticsState.errors.promos = null;
+        } catch (err) {
+            analyticsState.errors.promos = err.message || 'Unable to load promo analytics';
+        } finally {
+            analyticsState.loading.promos = false;
+            refreshAnalyticsPanel();
+        }
+    }
+
+    async function hydrateAnalytics({ force = false } = {}) {
+        const analyticsState = ensureAnalyticsState();
+        if (!state.admin.token || !state.admin.user) {
+            analyticsState.merch = null;
+            analyticsState.promos = null;
+            refreshAnalyticsPanel();
+            return;
+        }
+        const range = analyticsState.rangeDays || 30;
+        const tasks = [];
+        if (force || !analyticsState.merch) tasks.push(loadMerchAnalytics(range));
+        if (force || !analyticsState.promos) tasks.push(loadPromoAnalytics(range));
+        if (tasks.length) {
+            await Promise.all(tasks);
+        } else {
+            refreshAnalyticsPanel();
         }
     }
 
@@ -2516,7 +2605,7 @@
         const header = el('header', { class: 'catalog-page-header' },
             el('div', {},
                 el('h1', { class: 'catalog-page-title' }, 'Product Catalog'),
-                el('p', { class: 'catalog-page-subtitle muted' }, 'Discover our curated collection of modern furniture and decor')
+                el('p', { class: 'catalog-page-subtitle muted' }, 'Discover our curated collection of clothes designed for comfort and style.')
             )
         );
         page.appendChild(header);
@@ -3069,7 +3158,6 @@
         const priceRow = el('div', { class: 'pv-price-row' },
             el('span', { class: 'pv-price', attrs: { 'data-price-cents': prod.priceCents } }, money(prod.priceCents)),
             stockChip,
-            el('span', { class: 'pv-meta-chip' }, 'Ships in 24h')
         );
 
         const infoNodes = [
@@ -4067,16 +4155,12 @@
                 wrap.querySelector('#checkout-loading')?.remove();
                 const heroTotalValue = el('span', { class: 'checkout-hero-total-amount' }, money(estSubtotal + estTax));
                 const heroBadges = el('div', { class: 'checkout-hero-badges' },
-                    el('span', { class: 'checkout-hero-badge' }, 'Ships in 24h'),
-                    el('span', { class: 'checkout-hero-badge' }, 'Free exchanges'),
                     el('span', { class: 'checkout-hero-badge' }, totalQuantity + (totalQuantity === 1 ? ' item' : ' items') + ' in bag')
                 );
                 const hero = el('div', { class: 'checkout-hero' },
                     el('div', { class: 'checkout-hero-copy' },
                         el('p', { class: 'checkout-eyebrow' }, 'Secure checkout'),
-                        el('h1', { class: 'checkout-hero-title' }, 'Almost there'),
                         heroBadges,
-                        el('p', { class: 'muted' }, 'Complete your delivery details and we will dispatch the order right away.')
                     ),
                     el('div', { class: 'checkout-hero-total' },
                         el('span', { class: 'label' }, 'Est. total'),
@@ -5589,6 +5673,7 @@
         const sectionDefs = [
             { key: 'products', label: 'Products' },
             { key: 'orders', label: 'Orders' },
+            { key: 'analytics', label: 'Analytics' },
             { key: 'refunds', label: 'Refunds' },
             { key: 'reviews', label: 'Reviews Moderation' },
             { key: 'discounts', label: 'Discounts' },
@@ -5628,6 +5713,9 @@
                 if (key === activeKey) node.classList.remove('hidden');
                 else node.classList.add('hidden');
             });
+            if (activeKey === 'analytics') {
+                hydrateAnalytics().catch(err => console.warn('analytics hydrate failed', err));
+            }
         }
 
         sectionDefs.forEach(({ key, label }) => {
@@ -5658,17 +5746,110 @@
                 clearAdminAuth(true);
             });
         }
+        const analyticsPanel = el('div', { class: 'panel admin-analytics-panel mt-md', attrs: { 'data-admin-section': 'analytics' } },
+            el('div', { class: 'panel-header admin-analytics-header' },
+                el('span', {}, 'Analytics'),
+                el('div', { class: 'inline-fields analytics-controls' },
+                    (function () {
+                        const wrapLabel = el('label', { class: 'analytics-range-select-label tiny', attrs: { for: 'analytics-range-select' } }, 'Range');
+                        const sel = el('select', { attrs: { id: 'analytics-range-select' } },
+                            el('option', { attrs: { value: '7' } }, '7 days'),
+                            el('option', { attrs: { value: '14' } }, '14 days'),
+                            el('option', { attrs: { value: '30' } }, '30 days'),
+                            el('option', { attrs: { value: '60' } }, '60 days'),
+                            el('option', { attrs: { value: '90' } }, '90 days')
+                        );
+                        wrapLabel.appendChild(sel);
+                        return wrapLabel;
+                    })(),
+                    el('button', { class: 'btn btn-small btn-outline', attrs: { type: 'button', id: 'analytics-refresh-btn' } }, 'Refresh')
+                )
+            ),
+            el('div', { class: 'analytics-range-label tiny muted', attrs: { id: 'analytics-range-label' } }, 'Merchandising KPIs, inventory alerts, promo lift.'),
+            el('div', { class: 'analytics-status tiny', attrs: { id: 'analytics-status' } }),
+            el('div', { class: 'analytics-metrics-grid', attrs: { id: 'analytics-metrics-grid' } }),
+            el('div', { class: 'analytics-two-col' },
+                el('section', { class: 'analytics-card' },
+                    el('div', { class: 'analytics-card-head' },
+                        el('span', { class: 'analytics-card-title' }, 'Top movers'),
+                        el('span', { class: 'analytics-card-meta tiny muted', attrs: { id: 'analytics-top-products-meta' } })
+                    ),
+                    el('div', { class: 'analytics-card-body analytics-list', attrs: { id: 'analytics-top-products' } })
+                ),
+                el('section', { class: 'analytics-card' },
+                    el('div', { class: 'analytics-card-head' },
+                        el('span', { class: 'analytics-card-title' }, 'Category mix'),
+                        el('span', { class: 'analytics-card-meta tiny muted', attrs: { id: 'analytics-categories-meta' } })
+                    ),
+                    el('div', { class: 'analytics-card-body analytics-list', attrs: { id: 'analytics-category-list' } })
+                )
+            ),
+            el('div', { class: 'analytics-two-col' },
+                el('section', { class: 'analytics-card' },
+                    el('div', { class: 'analytics-card-head' },
+                        el('span', { class: 'analytics-card-title' }, 'Low stock alerts'),
+                        el('span', { class: 'analytics-card-meta tiny muted' }, '≤5 units')
+                    ),
+                    el('div', { class: 'analytics-card-body analytics-list', attrs: { id: 'analytics-low-stock' } })
+                ),
+                el('section', { class: 'analytics-card' },
+                    el('div', { class: 'analytics-card-head' },
+                        el('span', { class: 'analytics-card-title' }, 'Promo top codes'),
+                        el('span', { class: 'analytics-card-meta tiny muted', attrs: { id: 'promo-topcodes-meta' } })
+                    ),
+                    el('div', { class: 'analytics-card-body analytics-list', attrs: { id: 'promo-top-discounts' } })
+                )
+            ),
+            el('section', { class: 'analytics-card analytics-heatmap-card' },
+                el('div', { class: 'analytics-card-head' },
+                    el('span', { class: 'analytics-card-title' }, 'Promo heatmap'),
+                    el('span', { class: 'analytics-card-meta tiny muted' }, 'Conversions by hour/day')
+                ),
+                el('div', { class: 'analytics-heatmap-wrap' },
+                    el('div', { class: 'promo-heatmap-grid', attrs: { id: 'promo-heatmap-grid' } })
+                ),
+                el('div', { class: 'promo-timeline', attrs: { id: 'promo-timeline' } })
+            )
+        );
+        rootEl.appendChild(analyticsPanel);
+        sectionRefs.set('analytics', analyticsPanel);
+
+        const analyticsRangeSelect = analyticsPanel.querySelector('#analytics-range-select');
+        if (analyticsRangeSelect) {
+            analyticsRangeSelect.value = String(ensureAnalyticsState().rangeDays);
+            analyticsRangeSelect.addEventListener('change', async () => {
+                const analyticsState = ensureAnalyticsState();
+                analyticsState.rangeDays = clampClientRangeDays(analyticsRangeSelect.value, analyticsState.rangeDays || 30);
+                await hydrateAnalytics({ force: true });
+            });
+        }
+        const analyticsRefreshBtn = analyticsPanel.querySelector('#analytics-refresh-btn');
+        if (analyticsRefreshBtn) {
+            analyticsRefreshBtn.addEventListener('click', async () => {
+                analyticsRefreshBtn.disabled = true;
+                try {
+                    await hydrateAnalytics({ force: true });
+                } catch (err) {
+                    console.warn('analytics refresh failed', err);
+                } finally {
+                    analyticsRefreshBtn.disabled = false;
+                }
+            });
+        }
+
+        refreshAnalyticsPanel();
+
         const prodWrap = el('div', { class: 'panel mt-md', attrs: { 'data-admin-section': 'products' } },
             el('div', { class: 'panel-header' },
                 el('span', {}, 'Products'),
                 el('div', { class: 'inline-fields', attrs: { style: 'gap:.5rem;align-items:center;' } },
-                    el('button', { class: 'btn btn-small btn-danger', attrs: { id: 'bulk-delete-btn', disabled: 'true' } }, 'Delete Selected'),
-                    el('div', { class: 'flex gap-xs align-center', attrs: { style: 'font-size:.75rem;margin-left:.5rem;gap:.4rem;' } },
-                        el('label', { class: 'flex gap-xs align-center', attrs: { for: 'toggle-show-deleted', style: 'gap:.3rem;cursor:pointer;' } },
-                            el('input', { attrs: { type: 'checkbox', id: 'toggle-show-deleted' } }),
-                            el('span', {}, 'Show Deleted')
-                        ),
+                    el('div', { attrs: { style: 'display:inline-flex;' } },
+                        el('button', { class: 'btn btn-small btn-danger', attrs: { id: 'bulk-delete-btn', disabled: 'true' } }, 'Delete Selected'),
                         el('button', { class: 'btn btn-small btn-danger', attrs: { id: 'bulk-purge-btn', style: 'display:none;', disabled: 'true' } }, 'Delete Selected')
+                    ),
+                    el('label', { class: 'flex gap-xs align-center', attrs: { for: 'toggle-show-deleted', style: 'gap:.3rem;cursor:pointer;font-size:.75rem;margin-left:.5rem;' } },
+                        el('input', { attrs: { type: 'checkbox', id: 'toggle-show-deleted' } }),
+                        el('span', {}, 'Show Deleted')
                     )
                 )
             ),
@@ -5694,7 +5875,6 @@
         const ordersWrap = el('div', { class: 'panel admin-orders-panel mt-md', attrs: { 'data-admin-section': 'orders' } },
             el('div', { class: 'panel-header admin-orders-header' },
                 el('div', { class: 'flex flex-col gap-xxs' },
-                    el('span', { class: 'pv-eyebrow tiny muted' }, 'Operations'),
                     el('span', { class: 'admin-orders-title' }, 'Orders overview')
                 ),
                 el('div', { class: 'inline-fields' },
@@ -5710,7 +5890,6 @@
         const refundsPanel = el('div', { class: 'panel admin-refunds-panel mt-md', attrs: { 'data-admin-section': 'refunds' } },
             el('div', { class: 'panel-header admin-refunds-header' },
                 el('div', { class: 'flex flex-col gap-xxs' },
-                    el('span', { class: 'pv-eyebrow tiny muted' }, 'Support'),
                     el('span', { class: 'admin-refunds-title' }, 'Refund requests')
                 ),
                 el('div', { class: 'inline-fields' },
@@ -6434,22 +6613,25 @@
             const refundOrders = orders.filter(order => order.returnRequestedAt);
             if (refundsSummaryEl) {
                 const counts = { pending: 0, in_review: 0, approved: 0, refunded: 0, declined: 0 };
+                let closedCount = 0;
                 let responseAccumulator = 0;
                 let responseCount = 0;
                 refundOrders.forEach(order => {
                     const key = getRefundStatus(order.returnAdminStatus);
                     counts[key] = (counts[key] || 0) + 1;
+                    if (order.returnClosedAt) closedCount += 1;
                     if (order.returnAdminRespondedAt && order.returnRequestedAt) {
                         responseAccumulator += (new Date(order.returnAdminRespondedAt).getTime() - new Date(order.returnRequestedAt).getTime());
                         responseCount += 1;
                     }
                 });
-                const openCount = counts.pending + counts.in_review;
-                const resolvedCount = counts.approved + counts.refunded + counts.declined;
+                const openCount = refundOrders.filter(o => !o.returnClosedAt && ['pending', 'in_review'].includes(getRefundStatus(o.returnAdminStatus))).length;
+                const resolvedCount = refundOrders.length - openCount;
                 const avgHours = responseCount ? Math.max(1, Math.round(responseAccumulator / responseCount / (1000 * 60 * 60))) : null;
                 const summaryCards = [
                     { label: 'Open', value: openCount },
                     { label: 'Resolved', value: resolvedCount },
+                    { label: 'Closed', value: closedCount },
                     { label: 'Total', value: refundOrders.length },
                     { label: 'Avg response', value: avgHours ? `${avgHours}h` : '—' }
                 ];
@@ -6472,9 +6654,11 @@
                         const heroImg = resolveItemImage(heroItem);
                         const extraItems = Math.max(0, items.length - 1);
                         const statusKey = getRefundStatus(order.returnAdminStatus);
+                        const isClosed = !!order.returnClosedAt;
+                        const closedLabel = isClosed && order.returnClosedAt ? new Date(order.returnClosedAt).toLocaleString() : '';
                         const usageCopy = describeRefundUsage(order);
                         const reasonText = order.returnReason || 'Customer did not provide an explanation.';
-                        const card = el('article', { class: 'admin-refund-card', attrs: { 'data-refund-order': order.id || '' } },
+                        const card = el('article', { class: 'admin-refund-card', attrs: { 'data-refund-order': order.id || '', 'data-case-closed': isClosed ? 'true' : 'false' } },
                             el('div', { class: 'admin-refund-card-head' },
                                 el('div', { class: 'admin-refund-identity' },
                                     el('div', { class: 'admin-refund-thumb' },
@@ -6486,7 +6670,10 @@
                                         el('span', { class: 'admin-refund-customer tiny muted' }, order.customerName || order.customerEmail || 'Unknown customer')
                                     )
                                 ),
-                                el('span', { class: 'admin-refund-status-chip status-' + statusKey }, formatRefundStatus(statusKey))
+                                el('div', { class: 'admin-refund-status-cluster' },
+                                    el('span', { class: 'admin-refund-status-chip status-' + statusKey }, formatRefundStatus(statusKey)),
+                                    isClosed ? el('span', { class: 'admin-refund-case-chip', attrs: { title: closedLabel ? `Closed on ${closedLabel}` : 'Case closed' } }, 'Case closed') : null
+                                )
                             ),
                             el('div', { class: 'admin-refund-overview' },
                                 el('div', { class: 'admin-refund-overview-block' },
@@ -6506,7 +6693,10 @@
                             order.returnUsageNotes ? el('div', { class: 'admin-refund-notes tiny muted' }, 'Usage notes: ', order.returnUsageNotes) : null,
                             el('div', { class: 'admin-refund-actions' },
                                 el('button', { class: 'btn btn-xs btn-outline', attrs: { type: 'button', 'data-refund-toggle': order.id || '', 'aria-expanded': 'false' } }, 'Open conversation'),
-                                el('button', { class: 'btn btn-xs btn-ghost', attrs: { type: 'button', 'data-refund-scroll-order': order.id || '' } }, 'View order card')
+                                el('button', { class: 'btn btn-xs btn-ghost', attrs: { type: 'button', 'data-refund-scroll-order': order.id || '' } }, 'View order card'),
+                                !isClosed ? el('button', { class: 'btn btn-xs btn-danger', attrs: { type: 'button', 'data-refund-close': order.id || '' } }, 'Close case')
+                                    : el('button', { class: 'btn btn-xs btn-outline', attrs: { type: 'button', 'data-refund-reopen': order.id || '' } }, 'Reopen case'),
+                                isClosed ? el('span', { class: 'tiny muted admin-refund-closed-note', attrs: { 'data-refund-closed-label': order.id || '' } }, closedLabel ? `Closed ${closedLabel}` : 'Closed') : null
                             ),
                             el('div', { class: 'admin-refund-detail hidden', attrs: { 'data-refund-detail': order.id || '' } },
                                 el('div', { class: 'admin-refund-timeline' },
@@ -6528,26 +6718,27 @@
                                         el('p', { class: 'tiny muted' }, 'Conversation loads when opened.')
                                     ),
                                     el('form', { class: 'admin-refund-reply', attrs: { 'data-refund-form': order.id || '' } },
+                                        isClosed ? el('p', { class: 'tiny alert admin-refund-closed-banner' }, closedLabel ? `Case closed ${closedLabel}. Reopen to reply.` : 'Case closed. Reopen to send new updates.') : null,
                                         el('label', {},
                                             el('span', { class: 'tiny muted' }, 'Status'),
-                                            el('select', { attrs: { name: 'refund-status' } },
+                                            el('select', { attrs: { name: 'refund-status', disabled: isClosed ? 'true' : null } },
                                                 Object.entries(REFUND_STATUS_LABELS).map(([value, label]) => el('option', { attrs: { value, selected: value === statusKey ? 'true' : null } }, label))
                                             )
                                         ),
                                         el('label', {},
                                             el('span', { class: 'tiny muted' }, 'Usage notes (internal)'),
-                                            el('input', { attrs: { type: 'text', name: 'refund-usage', value: order.returnUsageNotes || '', placeholder: 'Ex: Signs of wear on collar' } })
+                                            el('input', { attrs: { type: 'text', name: 'refund-usage', value: order.returnUsageNotes || '', placeholder: 'Ex: Signs of wear on collar', disabled: isClosed ? 'true' : null } })
                                         ),
                                         el('label', {},
                                             el('span', { class: 'tiny muted' }, 'Internal notes'),
-                                            el('textarea', { attrs: { name: 'refund-notes', rows: '2', placeholder: 'Visible defects, next steps…' } }, order.returnAdminNotes || '')
+                                            el('textarea', { attrs: { name: 'refund-notes', rows: '2', placeholder: 'Visible defects, next steps…', disabled: isClosed ? 'true' : null } }, order.returnAdminNotes || '')
                                         ),
                                         el('label', {},
                                             el('span', { class: 'tiny muted' }, 'Reply to customer'),
-                                            el('textarea', { attrs: { name: 'refund-message', rows: '3', placeholder: 'Share updates or next steps (optional)' } })
+                                            el('textarea', { attrs: { name: 'refund-message', rows: '3', placeholder: 'Share updates or next steps (optional)', disabled: isClosed ? 'true' : null } })
                                         ),
                                         el('div', { class: 'admin-refund-reply-actions' },
-                                            el('button', { class: 'btn btn-xs', attrs: { type: 'submit' } }, 'Update & send')
+                                            el('button', { class: 'btn btn-xs', attrs: { type: 'submit', disabled: isClosed ? 'true' : null } }, 'Update & send')
                                         )
                                     )
                                 )
@@ -6597,11 +6788,83 @@
                                 }
                             }
                         }
+                        const closeBtn = event.target.closest('[data-refund-close]');
+                        if (closeBtn) {
+                            const orderId = closeBtn.getAttribute('data-refund-close');
+                            if (!orderId) return;
+                            if (!confirm('Close this refund case? The conversation will be read-only until reopened.')) return;
+                            const form = refundsListEl.querySelector(`[data-refund-form="${CSS.escape(orderId)}"]`);
+                            const payload = form ? {
+                                status: form.querySelector('select[name="refund-status"]')?.value,
+                                notes: form.querySelector('textarea[name="refund-notes"]')?.value,
+                                usageNotes: form.querySelector('input[name="refund-usage"]')?.value,
+                                message: form.querySelector('textarea[name="refund-message"]')?.value
+                            } : {};
+                            closeBtn.disabled = true;
+                            try {
+                                const result = await closeRefundCase(orderId, payload);
+                                const order = orders.find(o => String(o.id) === String(orderId));
+                                if (order) {
+                                    order.returnAdminStatus = result.status || order.returnAdminStatus;
+                                    order.returnAdminNotes = result.notes ?? order.returnAdminNotes;
+                                    order.returnUsageNotes = result.usageNotes ?? order.returnUsageNotes;
+                                    order.returnAdminRespondedAt = result.respondedAt || order.returnAdminRespondedAt;
+                                    order.returnClosedAt = result.closedAt || new Date().toISOString();
+                                }
+                                if (result?.message) {
+                                    const store = getRefundThreadStore('admin');
+                                    const cache = store.get(orderId);
+                                    if (cache) {
+                                        cache.messages = [...cache.messages, result.message];
+                                    } else {
+                                        store.set(orderId, { messages: [result.message] });
+                                    }
+                                }
+                                renderRefundMessagesThread(orderId);
+                                refreshAdminTables();
+                                notify('Refund case closed', 'success', 2400);
+                            } catch (err) {
+                                notify('Unable to close case: ' + (err?.message || 'Unknown error'), 'error');
+                            } finally {
+                                closeBtn.disabled = false;
+                            }
+                            return;
+                        }
+                        const reopenBtn = event.target.closest('[data-refund-reopen]');
+                        if (reopenBtn) {
+                            const orderId = reopenBtn.getAttribute('data-refund-reopen');
+                            if (!orderId) return;
+                            const form = refundsListEl.querySelector(`[data-refund-form="${CSS.escape(orderId)}"]`);
+                            const payload = form ? {
+                                status: form.querySelector('select[name="refund-status"]')?.value
+                            } : {};
+                            reopenBtn.disabled = true;
+                            try {
+                                const result = await reopenRefundCase(orderId, payload);
+                                const order = orders.find(o => String(o.id) === String(orderId));
+                                if (order) {
+                                    order.returnAdminStatus = result.status || order.returnAdminStatus;
+                                    order.returnClosedAt = result.closedAt || null;
+                                    order.returnAdminRespondedAt = result.respondedAt || order.returnAdminRespondedAt;
+                                }
+                                refreshAdminTables();
+                                notify('Refund case reopened', 'success', 2200);
+                            } catch (err) {
+                                notify('Unable to reopen case: ' + (err?.message || 'Unknown error'), 'error');
+                            } finally {
+                                reopenBtn.disabled = false;
+                            }
+                            return;
+                        }
                     });
                     refundsListEl.addEventListener('submit', async (event) => {
                         const form = event.target.closest('[data-refund-form]');
                         if (!form) return;
                         event.preventDefault();
+                        if (form.closest('[data-case-closed="true"]')) {
+                            notify('Case is closed. Reopen it before sending new updates.', 'warn');
+                            return;
+                        }
                         const orderId = form.getAttribute('data-refund-form');
                         if (!orderId) return;
                         const status = form.querySelector('select[name="refund-status"]').value;
@@ -6621,6 +6884,7 @@
                                 order.returnAdminNotes = result.notes;
                                 order.returnAdminRespondedAt = result.respondedAt;
                                 order.returnUsageNotes = result.usageNotes;
+                                order.returnClosedAt = result.closedAt || null;
                             }
                             renderRefundMessagesThread(orderId);
                             refreshAdminTables();
@@ -6628,6 +6892,7 @@
                         } catch (err) {
                             const msg = err?.message?.includes('HTTP 404')
                                 ? 'HTTP 404 (route missing). Restart or redeploy the server so /api/orders/:id/refund-response is available, then refresh admin data.'
+                                : err?.status === 409 ? 'Case already closed. Click Reopen before updating.'
                                 : err?.message || 'Unknown error';
                             notify('Unable to update refund: ' + msg, 'error');
                             console.warn('[refund-response] failed for', orderId, err);
@@ -6870,6 +7135,189 @@
             return;
         }
         state.admin.lowStock.forEach(p => tbody.appendChild(el('tr', {}, el('td', {}, p.title), el('td', {}, String(p.totalInventory)), el('td', {}, money(p.priceCents)))));
+    }
+
+    function refreshAnalyticsPanel() {
+        const analyticsState = ensureAnalyticsState();
+        const statusEl = document.getElementById('analytics-status');
+        const statusParts = [];
+        if (analyticsState.loading.merch || analyticsState.loading.promos) statusParts.push('Loading insights…');
+        if (analyticsState.errors.merch) statusParts.push('Merch: ' + analyticsState.errors.merch);
+        if (analyticsState.errors.promos) statusParts.push('Promos: ' + analyticsState.errors.promos);
+        if (statusEl) {
+            statusEl.textContent = statusParts.join(' · ');
+            statusEl.classList.toggle('hidden', statusParts.length === 0);
+        }
+
+        const rangeLabelEl = document.getElementById('analytics-range-label');
+        if (rangeLabelEl) {
+            if (analyticsState.merch?.range) {
+                const { range } = analyticsState.merch;
+                const start = range.start ? new Date(range.start).toLocaleDateString() : '';
+                const end = range.end ? new Date(range.end).toLocaleDateString() : '';
+                rangeLabelEl.textContent = `Last ${range.days} days · ${start} – ${end}`;
+            } else {
+                rangeLabelEl.textContent = 'Pick a range to load merchandising analytics.';
+            }
+        }
+
+        const metricsGrid = document.getElementById('analytics-metrics-grid');
+        if (metricsGrid) {
+            metricsGrid.innerHTML = '';
+            if (analyticsState.loading.merch) {
+                metricsGrid.appendChild(el('p', { class: 'tiny muted' }, 'Loading merchandising KPIs…'));
+            } else if (!analyticsState.merch) {
+                metricsGrid.appendChild(el('p', { class: 'tiny muted' }, 'No data yet. Refresh to pull analytics.'));
+            } else {
+                const { totals, velocity } = analyticsState.merch;
+                const fmtDelta = (val) => val == null ? '—' : `${val >= 0 ? '+' : ''}${val.toFixed(1)}%`;
+                const metrics = [
+                    { label: 'Revenue', value: money(totals.revenueCents), delta: velocity?.revenueChangePct },
+                    { label: 'Orders', value: totals.totalOrders?.toLocaleString?.() || String(totals.totalOrders || 0), delta: velocity?.ordersChangePct },
+                    { label: 'Avg order', value: money(totals.avgOrderValueCents) },
+                    { label: 'Units sold', value: (totals.unitsSold || 0).toLocaleString() },
+                    { label: 'Discount capture', value: (totals.discountCaptureRatePct || 0).toFixed(1) + '%' },
+                    { label: 'Net sales', value: money(totals.netSalesCents) }
+                ];
+                metrics.forEach(metric => {
+                    const card = el('div', { class: 'analytics-metric-card' },
+                        el('span', { class: 'analytics-metric-label tiny muted' }, metric.label),
+                        el('strong', { class: 'analytics-metric-value' }, metric.value)
+                    );
+                    if (metric.delta != null) {
+                        const deltaClass = metric.delta >= 0 ? 'pos' : 'neg';
+                        card.appendChild(el('span', { class: 'analytics-metric-delta ' + deltaClass }, fmtDelta(metric.delta)));
+                    }
+                    metricsGrid.appendChild(card);
+                });
+            }
+        }
+
+        const renderList = (containerId, items, emptyText) => {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            container.innerHTML = '';
+            if (!items || !items.length) {
+                container.appendChild(el('p', { class: 'tiny muted' }, emptyText));
+                return;
+            }
+            items.forEach(node => container.appendChild(node));
+        };
+
+        const topProductNodes = analyticsState.merch?.topProducts?.map((product) => {
+            const badgeText = product.inventoryRemaining == null ? '—' : `${product.inventoryRemaining} left`;
+            return el('div', { class: 'analytics-list-row' },
+                el('div', { class: 'analytics-list-main' },
+                    el('span', { class: 'analytics-list-title' }, product.title),
+                    el('span', { class: 'analytics-list-sub tiny muted' }, `${product.unitsSold} units · ${money(product.revenueCents)}`)
+                ),
+                el('span', { class: 'analytics-pill ' + (product.stockHealth || 'unknown') }, badgeText)
+            );
+        });
+        renderList('analytics-top-products', topProductNodes, analyticsState.loading.merch ? 'Calculating top products…' : 'No product movement in this range.');
+
+        const categoryNodes = analyticsState.merch?.categoryBreakdown?.map(entry => {
+            const share = entry.sharePct ? entry.sharePct.toFixed(1) + '%' : '—';
+            return el('div', { class: 'analytics-list-row' },
+                el('div', { class: 'analytics-list-main' },
+                    el('span', { class: 'analytics-list-title' }, entry.label || 'Category'),
+                    el('span', { class: 'analytics-list-sub tiny muted' }, `${entry.unitsSold || 0} units`)
+                ),
+                el('span', { class: 'analytics-pill neutral' }, share)
+            );
+        });
+        const categoriesMetaEl = document.getElementById('analytics-categories-meta');
+        if (categoriesMetaEl) {
+            categoriesMetaEl.textContent = analyticsState.merch?.categoryBreakdown?.length ? 'Revenue share' : '';
+        }
+        renderList('analytics-category-list', categoryNodes, analyticsState.loading.merch ? 'Crunching categories…' : 'No categorized sales in this range.');
+
+        const lowStockNodes = analyticsState.merch?.lowStock?.products?.map(item => {
+            const severityClass = ({
+                low: 'risk',
+                critical: 'critical',
+                out: 'critical',
+                watch: 'watch'
+            })[item.severity] || 'neutral';
+            return el('div', { class: 'analytics-list-row' },
+                el('div', { class: 'analytics-list-main' },
+                    el('span', { class: 'analytics-list-title' }, item.title),
+                    el('span', { class: 'analytics-list-sub tiny muted' }, money(item.priceCents))
+                ),
+                el('span', { class: 'analytics-pill ' + severityClass }, `${item.totalInventory} left`)
+            );
+        });
+        renderList('analytics-low-stock', lowStockNodes, analyticsState.loading.merch ? 'Checking stock…' : 'All tracked products look healthy.');
+
+        const promoNodes = analyticsState.promos?.topDiscounts?.slice(0, 6).map(entry => {
+            const share = entry.sharePct ? entry.sharePct.toFixed(1) + '%' : '—';
+            const metaBits = [`${entry.orders} orders`, money(entry.revenueCents)];
+            if (entry.type) metaBits.push(entry.type);
+            return el('div', { class: 'analytics-list-row' },
+                el('div', { class: 'analytics-list-main' },
+                    el('span', { class: 'analytics-list-title' }, entry.code || '—'),
+                    el('span', { class: 'analytics-list-sub tiny muted' }, metaBits.join(' · '))
+                ),
+                el('span', { class: 'analytics-pill neutral' }, share)
+            );
+        });
+        renderList('promo-top-discounts', promoNodes, analyticsState.loading.promos ? 'Summarizing promo usage…' : 'No discount usage recorded.');
+
+        const topMeta = document.getElementById('analytics-top-products-meta');
+        if (topMeta) {
+            topMeta.textContent = analyticsState.merch?.topProducts?.length ? 'Inventory risk + revenue' : '';
+        }
+        const promoMeta = document.getElementById('promo-topcodes-meta');
+        if (promoMeta) {
+            const orders = analyticsState.promos?.totals?.orders || 0;
+            promoMeta.textContent = orders ? `${orders} orders with codes` : '';
+        }
+
+        const heatmapContainer = document.getElementById('promo-heatmap-grid');
+        if (heatmapContainer) {
+            heatmapContainer.innerHTML = '';
+            const heatmapData = analyticsState.promos?.heatmap;
+            if (!heatmapData || !Array.isArray(heatmapData.grid) || !heatmapData.grid.length) {
+                heatmapContainer.appendChild(el('p', { class: 'tiny muted' }, analyticsState.loading.promos ? 'Loading heatmap…' : 'No promo redemptions in this window.'));
+            } else {
+                heatmapData.grid.forEach(row => {
+                    const rowEl = el('div', { class: 'heatmap-row' },
+                        el('span', { class: 'heatmap-label tiny muted' }, row.label || '—')
+                    );
+                    const hours = Array.isArray(row.hours) ? row.hours : [];
+                    hours.forEach(cell => {
+                        const max = heatmapData.maxCount || 0;
+                        const intensity = max > 0 ? Math.min(1, (cell.count || 0) / max) : 0;
+                        rowEl.appendChild(el('span', {
+                            class: 'heatmap-cell',
+                            attrs: {
+                                'data-count': cell.count || 0,
+                                'aria-label': `${row.label || 'Day'} hour ${cell.hour}: ${cell.count || 0} orders`,
+                                style: `--heat:${intensity.toFixed(2)}`
+                            }
+                        }, cell.count ? String(cell.count) : ''));
+                    });
+                    heatmapContainer.appendChild(rowEl);
+                });
+            }
+        }
+
+        const timelineEl = document.getElementById('promo-timeline');
+        if (timelineEl) {
+            timelineEl.innerHTML = '';
+            const rows = analyticsState.promos?.timeline?.slice(-8).reverse();
+            if (!rows || !rows.length) {
+                timelineEl.appendChild(el('p', { class: 'tiny muted' }, analyticsState.loading.promos ? 'Loading promo timeline…' : 'No promo activity yet.'));
+            } else {
+                rows.forEach(row => {
+                    timelineEl.appendChild(el('div', { class: 'timeline-row' },
+                        el('span', { class: 'timeline-date tiny muted' }, row.day ? new Date(row.day + 'T00:00:00Z').toLocaleDateString() : '—'),
+                        el('span', { class: 'timeline-orders' }, `${row.orders} orders`),
+                        el('span', { class: 'timeline-revenue' }, money(row.revenueCents))
+                    ));
+                });
+            }
+        }
     }
     function showDiscountModal(existing) {
         showModal(close => {
