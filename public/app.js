@@ -343,22 +343,16 @@
         let existing = document.getElementById('global-country-select');
         if (existing) return; // already added
         const wrap = document.createElement('div');
-    wrap.style.display = 'flex';
-    wrap.style.alignItems = 'center';
-    wrap.style.gap = '.4rem';
-    wrap.style.marginLeft = '1rem';
-    wrap.innerHTML = '<label style="font-size:.6rem;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:#1f2937;">Country</label>';
+        wrap.className = 'country-select-wrap';
+
+        const label = document.createElement('label');
+        label.className = 'country-select-label';
+        label.textContent = 'Country';
+        wrap.appendChild(label);
+
         const sel = document.createElement('select');
         sel.id = 'global-country-select';
-    sel.style.padding = '.35rem .6rem';
         sel.classList.add('header-country-select');
-        sel.style.fontSize = '.7rem';
-        sel.style.borderRadius = '4px';
-    sel.style.border = '1px solid rgba(17,24,39,.15)';
-    sel.style.background = '#f8fafc';
-    sel.style.color = '#111827';
-    sel.style.backdropFilter = 'none';
-        sel.style.minWidth = '140px';
         sel.style.zIndex = '500'; // ensure dropdown not hidden by other elements
         // Central country list so we can also reuse for checkout form later
         const COUNTRY_CHOICES = [
