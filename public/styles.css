@@ -7069,7 +7069,7 @@ body[data-route="admin"] .admin-section-btn:focus-visible {
 }
 
 .site-header {
-  width: 420px;
+  width: auto;
     margin-left: -20px;
     --hdr-pad-x: clamp(.9rem, 2.5vw, 2rem);
     background: #fff;
