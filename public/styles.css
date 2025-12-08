@@ -5833,8 +5833,8 @@ body[data-route="favorites"] #app-root {
   .favorites-content {
     border-radius: 28px;
     padding: 1rem;
-    width: 350px;
-    margin-left: -37px;
+    width: 370px;
+    margin-left: -35px;
   }
   .favorite-card-heart.active {
     background: linear-gradient(145deg, #fb7185, #f43f5e);
