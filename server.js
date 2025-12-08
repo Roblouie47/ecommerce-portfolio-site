@@ -1313,7 +1313,19 @@ app.post('/api/checkout/stripe/session', async (req, res) => {
   if (!stripe || !STRIPE_SECRET || !STRIPE_PUBLISHABLE) {
     return res.status(501).json({ error: 'Stripe not configured' });
   }
+  const session = getCustomerSession(req);
+  if (!session) {
+    return res.status(401).json({ error: 'Login required' });
+  }
   let { items, customer, discountCode, shippingCode } = req.body || {};
+  const sessionUser = session.user || {};
+  customer = {
+    ...customer,
+    email: customer?.email || sessionUser.email || null,
+    name: customer?.name || sessionUser.name || null,
+    address: customer?.address || sessionUser.address || null,
+    country: customer?.country || sessionUser.country || null
+  };
   if (!Array.isArray(items) || !items.length) {
     return res.status(400).json({ error: 'items[] required' });
   }
@@ -1484,6 +1496,18 @@ app.post('/api/orders', (req, res) => {
   // Normalize codes early for consistent lookups (DB codes stored uppercased)
   if (discountCode && typeof discountCode === 'string') discountCode = discountCode.trim().toUpperCase(); else discountCode = undefined;
   if (shippingCode && typeof shippingCode === 'string') shippingCode = shippingCode.trim().toUpperCase(); else shippingCode = undefined;
+  const session = getCustomerSession(req);
+  if (!session) {
+    return res.status(401).json({ error: 'Login required' });
+  }
+  const sessionUser = session.user || {};
+  customer = {
+    ...customer,
+    email: customer?.email || sessionUser.email || null,
+    name: customer?.name || sessionUser.name || null,
+    address: customer?.address || sessionUser.address || null,
+    country: customer?.country || sessionUser.country || null
+  };
   const now = new Date().toISOString();
   if (cartId) {
     const cart = db.prepare('SELECT * FROM carts WHERE id=?').get(cartId);
