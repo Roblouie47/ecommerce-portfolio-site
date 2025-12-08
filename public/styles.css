@@ -4522,6 +4522,10 @@ h6 {
     padding: 1rem 1.2rem;
     background: #fff;
   }
+  .auth-form.signup-form .field.mini-field input {
+  text-align: center;
+  min-width: 100px;
+  }
 }
 
 /* Enhanced product detail aesthetics */
