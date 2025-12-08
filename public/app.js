@@ -930,12 +930,6 @@
                 renderForm();
             });
 
-            const socialProviders = {
-                google: { name: 'Google', label: 'Sign in with Google', href: '/auth/google', iconClass: 'google' },
-                facebook: { name: 'Facebook', label: 'Sign in with Facebook', href: '/auth/facebook', iconClass: 'facebook' },
-                apple: { name: 'Apple', label: 'Sign in with Apple', href: '/auth/apple', iconClass: 'apple' }
-            };
-
             function renderForm() {
                 formSlot.innerHTML = '';
                 status.textContent = '';
@@ -945,30 +939,6 @@
                     formSlot.appendChild(buildLoginForm());
                 } else {
                     formSlot.appendChild(buildRegisterForm());
-                }
-            }
-
-            function handleSocialSignIn(provider) {
-                const config = socialProviders[provider];
-                if (!config) return;
-                status.classList.remove('error');
-                if (!config.href) {
-                    status.textContent = `${config.name} sign-in is not configured.`;
-                    status.classList.add('error');
-                    return;
-                }
-                status.textContent = `Opening ${config.name} sign-in…`;
-                const width = 520;
-                const height = 640;
-                const left = window.screenX + Math.max(0, (window.outerWidth - width) / 2);
-                const top = window.screenY + Math.max(0, (window.outerHeight - height) / 2);
-                const popup = window.open(config.href, `${provider}-oauth`, `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`);
-                if (!popup || popup.closed || typeof popup.closed === 'undefined') {
-                    status.textContent = `Please allow pop-ups to continue with ${config.name}.`;
-                    status.classList.add('error');
-                    notify(`Enable pop-ups and try again to sign in with ${config.name}.`, 'error', 4200);
-                } else {
-                    popup.focus();
                 }
             }
 
@@ -1019,20 +989,7 @@
                         submitting = false;
                     }
                 });
-                const divider = el('div', { class: 'auth-divider' },
-                    el('span', null, 'Or continue with')
-                );
-                const socialButtons = el('div', { class: 'social-buttons' },
-                    ...Object.entries(socialProviders).map(([key, config]) => {
-                        const btn = el('button', { class: `social-btn ${config.iconClass}`, attrs: { type: 'button', 'data-provider': key } },
-                            el('span', { class: `social-icon ${config.iconClass}` }),
-                            el('span', { class: 'social-label' }, config.label)
-                        );
-                        btn.addEventListener('click', () => handleSocialSignIn(key));
-                        return btn;
-                    })
-                );
-                return el('div', { class: 'auth-login-stack' }, form, divider, socialButtons);
+                return el('div', { class: 'auth-login-stack' }, form);
             }
 
             function buildRegisterForm() {
@@ -1234,9 +1191,18 @@
                     countrySelect
                 );
 
-                const dayInput = el('input', { attrs: { id: 'reg-day', type: 'number', inputmode: 'numeric', min: '1', max: '31', placeholder: 'Day', required: 'true' } });
-                const monthInput = el('input', { attrs: { id: 'reg-month', type: 'number', inputmode: 'numeric', min: '1', max: '12', placeholder: 'Month', required: 'true' } });
-                const yearInput = el('input', { attrs: { id: 'reg-year', type: 'number', inputmode: 'numeric', min: '1900', max: new Date().getFullYear(), placeholder: 'Year', required: 'true' } });
+                const dayInput = el('input', { attrs: { id: 'reg-day', type: 'text', inputmode: 'numeric', maxlength: '2', placeholder: 'Day', required: 'true' } });
+                const monthInput = el('input', { attrs: { id: 'reg-month', type: 'text', inputmode: 'numeric', maxlength: '2', placeholder: 'Month', required: 'true' } });
+                const yearInput = el('input', { attrs: { id: 'reg-year', type: 'text', inputmode: 'numeric', maxlength: '4', placeholder: 'Year', required: 'true' } });
+                const clampNumeric = (inputEl, maxLen) => {
+                    inputEl.addEventListener('input', () => {
+                        const digits = (inputEl.value || '').replace(/\D+/g, '').slice(0, maxLen);
+                        inputEl.value = digits;
+                    });
+                };
+                clampNumeric(dayInput, 2);
+                clampNumeric(monthInput, 2);
+                clampNumeric(yearInput, 4);
                 const dobLabel = el('label', { attrs: { for: 'reg-day' } }, 'Date of Birth*');
                 const dobRow = el('div', { class: 'field-row triple' },
                     el('div', { class: 'field mini-field' }, dayInput),
@@ -1258,15 +1224,23 @@
                 const termsInput = el('input', { attrs: { id: 'reg-terms', type: 'checkbox', required: 'true' } });
                 const termsHighlight = el('span', null,
                     'I agree to the ',
-                    el('a', { attrs: { href: '/privacy', target: '_blank', rel: 'noreferrer' } }, 'Privacy Policy'),
+                    el('a', { attrs: { href: '#', 'data-legal': 'privacy' } }, 'Privacy Policy'),
                     ' and ',
-                    el('a', { attrs: { href: '/terms', target: '_blank', rel: 'noreferrer' } }, 'Terms of Use'),
+                    el('a', { attrs: { href: '#', 'data-legal': 'terms' } }, 'Terms of Use'),
                     '.'
                 );
                 const termsField = el('label', { class: 'checkbox-field', attrs: { for: 'reg-terms' } },
                     termsInput,
                     termsHighlight
                 );
+
+                termsHighlight.querySelectorAll('a[data-legal]').forEach(link => {
+                    link.addEventListener('click', (evt) => {
+                        evt.preventDefault();
+                        const type = link.getAttribute('data-legal');
+                        showLegalModal(type === 'terms' ? 'terms' : 'privacy');
+                    });
+                });
 
                 const submitBtn = el('button', { class: 'auth-submit', attrs: { type: 'submit' } }, 'Create Account');
                 const form = el('form', { class: 'auth-form signup-form', attrs: { autocomplete: 'on' } },
@@ -2676,12 +2650,17 @@
                 if (!categoryMap.has(norm)) categoryMap.set(norm, label);
             });
         });
-        if (!categoryMap.size) {
-            categoryMap.set('seating', 'Seating');
-            categoryMap.set('lighting', 'Lighting');
+        let categoryEntries = Array.from(categoryMap.entries())
+            .sort((a, b) => a[1].localeCompare(b[1]))
+            .slice(0, 8);
+        if (!categoryEntries.length) {
+            categoryEntries = [
+                ['seating', 'Seating'],
+                ['lighting', 'Lighting']
+            ];
         }
         const categoryCheckboxes = [];
-        categoryMap.forEach((label, value) => {
+        categoryEntries.forEach(([value, label]) => {
             const checkbox = el('label', { class: 'filter-checkbox' },
                 el('input', { attrs: { type: 'checkbox', value } }),
                 el('span', {}, label)
@@ -4379,6 +4358,98 @@
     /* ----------------------------
      * Modal System
      * ---------------------------- */
+
+    function showLegalModal(kind = 'privacy') {
+        const contentMap = {
+            privacy: {
+                title: 'Privacy Policy',
+                body: [
+                    'We collect the minimum data needed to run your shopping experience: your account details, shipping info, and order history.',
+                    'We do not sell your data. Third-party services (payments, analytics, email) are used only to fulfill your orders and improve the site.',
+                    'You can request deletion or export of your data by contacting support; we retain records only as required for transactions and compliance.'
+                ]
+            },
+            terms: {
+                title: 'Terms of Use',
+                body: [
+                    'Use this site to browse, purchase, and manage orders for our apparel catalog. Do not misuse the service or attempt to disrupt it.',
+                    'Prices, availability, and promotions may change. Orders are subject to confirmation; refunds/returns follow the policy shown at checkout.',
+                    'Your account is your responsibility—keep credentials secure. By placing an order you agree to pay the displayed totals and applicable taxes/shipping.'
+                ]
+            }
+        };
+
+        const content = contentMap[kind] || contentMap.privacy;
+
+        const toggleLegalBackdrop = (on) => {
+            modalRoot.classList.toggle('modal-legal-strong', on);
+        };
+
+        const buildLegal = (closeFn, extraClass = '') => {
+            const wrap = el('div', { class: `modal legal-modal ${extraClass}`.trim(), attrs: { role: 'dialog', 'aria-modal': 'true' } },
+                el('div', { class: 'modal-header' },
+                    el('h2', {}, content.title),
+                    el('button', { class: 'modal-close', attrs: { type: 'button' } }, '×')
+                ),
+                el('div', { class: 'modal-body legal-body' },
+                    ...content.body.map(p => el('p', {}, p))
+                ),
+                el('div', { class: 'modal-actions' },
+                    el('button', { class: 'btn btn-primary', attrs: { type: 'button' } }, 'Close')
+                )
+            );
+            wrap.querySelector('.modal-close')?.addEventListener('click', closeFn);
+            wrap.querySelector('.modal-actions button')?.addEventListener('click', closeFn);
+            wrap.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') closeFn();
+                if (e.key !== 'Tab') return;
+                const focusable = wrap.querySelectorAll('button, [href], input, textarea, select, [tabindex]:not([tabindex="-1"])');
+                if (!focusable.length) return;
+                const first = focusable[0];
+                const last = focusable[focusable.length - 1];
+                if (e.shiftKey && document.activeElement === first) {
+                    e.preventDefault();
+                    last.focus();
+                } else if (!e.shiftKey && document.activeElement === last) {
+                    e.preventDefault();
+                    first.focus();
+                }
+            });
+            return wrap;
+        };
+
+        const isStacked = !modalRoot.classList.contains('hidden') && modalRoot.querySelector('.modal');
+
+        if (!isStacked) {
+            toggleLegalBackdrop(true);
+            showModal((close) => {
+                const wrap = buildLegal(() => {
+                    close();
+                    toggleLegalBackdrop(false);
+                });
+                modalRoot.appendChild(wrap);
+            });
+            return;
+        }
+
+        // Layer on top of the existing modal without dismissing it.
+        toggleLegalBackdrop(true);
+        const layer = el('div', { class: 'modal-stack-layer' });
+        const closeStacked = () => {
+            layer.remove();
+            const fallbackFocus = modalRoot.querySelector('.modal');
+            if (fallbackFocus) fallbackFocus.focus?.();
+            if (!modalRoot.querySelector('.legal-modal')) {
+                toggleLegalBackdrop(false);
+            }
+        };
+
+        const wrap = buildLegal(closeStacked, 'legal-modal-stacked');
+        layer.appendChild(wrap);
+        modalRoot.appendChild(layer);
+        const focusable = wrap.querySelectorAll('button, [href], input, textarea, select, [tabindex]:not([tabindex="-1"])');
+        focusable[0]?.focus();
+    }
 
     function showModal(renderFn) {
         modalRoot.innerHTML = '';

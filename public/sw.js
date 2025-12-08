@@ -1,5 +1,5 @@
 // Basic service worker for offline shell + product list caching
-const APP_VERSION = '20251207-2';
+const APP_VERSION = '20251208-2';
 const VERSION = `v-${APP_VERSION}`;
 const CORE = [
     '/',

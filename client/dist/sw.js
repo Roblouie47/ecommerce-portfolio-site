@@ -1,5 +1,5 @@
 // Basic service worker for offline shell + product list caching
-const VERSION = 'v1';
+const VERSION = 'v20251208-2';
 const CORE = [
     '/',
     '/index.html',
