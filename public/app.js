@@ -2448,8 +2448,11 @@
         const layout = el('div', { class: 'favorites-layout' });
 
         const storeName = (state.meta?.storeName || '').trim();
+        let storedProfile = null;
+        try { storedProfile = JSON.parse(localStorage.getItem('customerProfile') || 'null'); } catch { storedProfile = null; }
         const shopperName = (localStorage.getItem('shopperName') || storeName || '').trim();
-        const displayName = shopperName || 'Guest Shopper';
+        const customerProfile = state.customer || storedProfile || null;
+        const displayName = (customerProfile?.name || customerProfile?.email || shopperName || 'Guest Shopper').trim();
 
         const content = el('section', { class: 'favorites-content' });
         const header = el('div', { class: 'favorites-header' },
