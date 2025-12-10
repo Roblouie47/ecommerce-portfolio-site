@@ -1766,11 +1766,16 @@ body[data-route="order-confirmation"] {
 
   .checkout-hero {
     flex-direction: column;
+    float: none;
+    position: static;
+    display: block;
+    margin-top: 8px;
   }
 
   .checkout-hero-total {
     text-align: left;
     align-self: stretch;
+    margin-top: 15px;
   }
 
   .checkout-summary-footer {
