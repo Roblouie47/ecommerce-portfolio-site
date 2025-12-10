@@ -3202,7 +3202,7 @@
             panel('Story & Support', [
                 el('p', {}, prod.description || 'Crafted in small batches to reduce waste and dyed with low-water techniques.'),
                 el('div', { class: 'pv-panel-actions' }, reviewButton),
-                el('span', { class: 'tiny muted' }, 'Need styling help? support@loomwear.shop')
+                el('span', { class: 'tiny muted' }, 'Need styling help? support@Nicolas.shop')
             ])
         );
 
