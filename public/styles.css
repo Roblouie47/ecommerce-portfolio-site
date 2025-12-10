@@ -2423,6 +2423,7 @@ h6 {
 @media (max-width: 900px) {
   .country-select-wrap {
     position: fixed;
+    margin-top: -5px;
     top: clamp(58px, 12vw, 76px);
     right: clamp(.5rem, 4vw, 1rem);
     z-index: 120;
@@ -2899,6 +2900,7 @@ h6 {
     padding: .40rem .80rem;
     font-size: .55rem;
     letter-spacing: .25em;
+    width: 300px;
     border-width: 1px;
   }
 
@@ -5833,8 +5835,8 @@ body[data-route="favorites"] #app-root {
   .favorites-content {
     border-radius: 28px;
     padding: 1rem;
-    width: 370px;
-    margin-left: -35px;
+    width: 380px;
+    margin-left: -29px;
   }
   .favorite-card-heart.active {
     background: linear-gradient(145deg, #fb7185, #f43f5e);
@@ -7264,6 +7266,7 @@ body[data-route="admin"] .admin-section-btn:focus-visible {
   height: 27px;
   margin-right: -27px;
   border-radius: 50%;
+  margin-left: 7px;
   background: #0f172a;
   color: #fff;
   display: inline-flex;
@@ -9572,8 +9575,9 @@ body[data-route="my-orders"] {
   }
 
   .customer-auth-controls .customer-name-label {
-  font-size: .50rem;
+  font-size: .60rem;
   font-weight: 600;
+  margin-left: 7px;
   color: #111827;
   letter-spacing: .2px;
   }
