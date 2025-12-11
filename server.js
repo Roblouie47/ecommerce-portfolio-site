@@ -79,7 +79,71 @@ function sanitizeUserRow(row) {
 }
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+app.post('/api/customer/register', async (req, res) => {
+  try {
+    // Email verification required for registration
+    const { email: rawEmail, password, name: rawName, avatarUrl: rawAvatar, country: rawCountry, address: rawAddress, verificationId: rawVerificationId, verificationCode: rawVerificationCode } = req.body || {};
+    const email = normalizeEmail(rawEmail);
+    const passwordValue = typeof password === 'string' ? password : '';
+    if (!email || !EMAIL_REGEX.test(email)) return res.status(400).json({ error: 'A valid email is required' });
+    if (passwordValue.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    const existing = selectUserByEmailStmt.get(email);
+    if (existing) return res.status(409).json({ error: 'Email already registered' });
 
+    const verificationId = typeof rawVerificationId === 'string' ? rawVerificationId.trim() : '';
+    const verificationCode = typeof rawVerificationCode === 'string' ? rawVerificationCode.trim() : '';
+    if (!verificationId || !verificationCode) {
+      return res.status(400).json({ error: 'Email verification is required before creating an account' });
+    }
+    const verificationEntry = pendingVerificationCodes.get(verificationId);
+    if (!verificationEntry || verificationEntry.email !== email) {
+      return res.status(400).json({ error: 'Verification code invalid or expired. Request a new code.' });
+    }
+    const nowMs = Date.now();
+    if (verificationEntry.expiresAt <= nowMs) {
+      pendingVerificationCodes.delete(verificationId);
+      if (verificationIndexByEmail.get(email) === verificationId) verificationIndexByEmail.delete(email);
+      return res.status(400).json({ error: 'Verification code expired. Request a new code.' });
+    }
+    const attemptHash = hashVerificationCode(verificationCode);
+    if (attemptHash !== verificationEntry.codeHash) {
+      verificationEntry.attempts = (verificationEntry.attempts || 0) + 1;
+      if (verificationEntry.attempts >= MAX_VERIFICATION_ATTEMPTS) {
+        pendingVerificationCodes.delete(verificationId);
+        if (verificationIndexByEmail.get(email) === verificationId) verificationIndexByEmail.delete(email);
+        return res.status(400).json({ error: 'Too many incorrect attempts. Request a new code.' });
+      }
+      return res.status(400).json({ error: 'Incorrect verification code' });
+    }
+    pendingVerificationCodes.delete(verificationId);
+    if (verificationIndexByEmail.get(email) === verificationId) verificationIndexByEmail.delete(email);
+
+    const name = clampText(rawName, 120);
+    const avatarUrl = clampText(rawAvatar, 2048);
+    const country = normalizeCountry(rawCountry);
+    const address = clampText(rawAddress, 512);
+    const passwordHash = await hashPassword(passwordValue);
+    const userId = uuid();
+    const now = new Date().toISOString();
+    insertUserStmt.run({
+      id: userId,
+      email,
+      passwordHash,
+      name,
+      role: 'customer',
+      avatarUrl,
+      country,
+      address,
+      createdAt: now
+    });
+    const session = createCustomerSession(userId);
+    const user = sanitizeUserRow({ userId, email, name, avatarUrl, country, address });
+    res.status(201).json(buildCustomerSessionResponse({ ...session, user }));
+  } catch (err) {
+    console.error('[customer] register failed', err);
+    res.status(500).json({ error: 'Unable to register' });
+  }
+});
 function normalizeEmail(value) {
   if (typeof value !== 'string') return '';
   return value.trim().toLowerCase();
