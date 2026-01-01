@@ -1,7 +1,5 @@
 # T-Shirt Shop Demo (Original Code)
 
-A single-file-per-layer demo e-commerce site (Shopify-inspired but **not copied**) with:
-
 Features
 
 - Product listing (title, description, price, inventory, images, tags)

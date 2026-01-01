@@ -6104,7 +6104,7 @@
         sectionRefs.set('discounts', discountPanel);
 
         const lowStockPanel = el('div', { class: 'panel mt-md', attrs: { 'data-admin-section': 'low-stock' } },
-            el('div', { class: 'panel-header' }, el('span', {}, 'Low Stock'), el('div', { class: 'inline-fields' }, el('input', { attrs: { id: 'low-stock-threshold', type: 'number', value: '5', min: '1', style: 'width:4rem;' } }), el('button', { class: 'btn btn-small', attrs: { id: 'low-stock-refresh' } }, 'Refresh'))),
+            el('div', { class: 'panel-header' }, el('span', {}, 'Low Stock'), el('div', { class: 'inline-fields' }, el('input', { attrs: { id: 'low-stock-threshold', type: 'number', value: '5', min: '1', style: 'width:4rem;' } }), el('button', { class: 'btn btn-small btn-outline', attrs: { id: 'low-stock-refresh' } }, 'Refresh'))),
             el('div', { class: 'admin-table-wrapper' }, el('table', { class: 'admin-table', attrs: { id: 'low-stock-table' } }))
         );
         rootEl.appendChild(lowStockPanel);
@@ -6861,7 +6861,6 @@
                     order.returnUsageNotes ? el('div', { class: 'admin-refund-notes tiny muted' }, 'Usage notes: ', order.returnUsageNotes) : null,
                     el('div', { class: 'admin-refund-actions' },
                         el('button', { class: 'btn btn-xs btn-outline', attrs: { type: 'button', 'data-refund-toggle': order.id || '', 'aria-expanded': 'false' } }, 'Open conversation'),
-                        el('button', { class: 'btn btn-xs btn-ghost', attrs: { type: 'button', 'data-refund-scroll-order': order.id || '' } }, 'View order card'),
                         !isClosed ? el('button', { class: 'btn btn-xs btn-danger', attrs: { type: 'button', 'data-refund-close': order.id || '' } }, 'Close case')
                             : el('button', { class: 'btn btn-xs btn-outline', attrs: { type: 'button', 'data-refund-reopen': order.id || '' } }, 'Restore case'),
                         isClosed ? el('span', { class: 'tiny muted admin-refund-closed-note', attrs: { 'data-refund-closed-label': order.id || '' } }, closedLabel ? `Closed ${closedLabel}` : 'Closed') : null
@@ -7157,7 +7156,7 @@
         }
         if (!items.length) {
             tbody.appendChild(el('tr', {},
-                el('td', { attrs: { colspan: '8' } }, el('div', { class: 'muted small' }, 'No reviews for this filter'))
+                el('td', { attrs: { colspan: '8' } }, el('div', { class: 'review small' }, 'No reviews for this filter'))
             ));
         }
         const statusColors = { pending: '#92400e', approved: '#065f46', rejected: '#991b1b' };
