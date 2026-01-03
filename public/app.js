@@ -166,6 +166,7 @@
         cartPage: { discountCode: '', discountApplied: false, shipCountry: 'PH' },
         admin: {
             token: localStorage.getItem('adminToken') || '',
+            expiresAt: localStorage.getItem('adminTokenExpiresAt') || null,
             user: (function () {
                 try {
                     const raw = localStorage.getItem('adminProfile');
@@ -2054,21 +2055,6 @@
      * Routing
      * ---------------------------- */
 
-    async function verifyAdminToken() {
-        if (!state.admin.token || !state.admin.user) {
-            updateAdminNavVisibility();
-            return false;
-        }
-        try {
-            await apiFetch('/api/admin/verify', { suppressAuthNotify: true });
-            updateAdminNavVisibility();
-            return true;
-        } catch (err) {
-            clearAdminAuth(false);
-            return false;
-        }
-    }
-
     function navigate(route, params = {}) {
         state.currentRoute = route;
         setBodyRoute(route);
@@ -3519,15 +3505,10 @@
             wrap.appendChild(el('div', { class: 'cart-form-control' }, sel));
             return wrap;
         })();
-        const progressWrap = el('div', { class: 'free-ship-progress hidden' },
-            el('div', { class: 'bar' }),
-            el('div', { class: 'fs-label' })
-        );
         const totalsBox = el('div', { class: 'cart-totals' });
 
         summaryCard.appendChild(discountField);
         summaryCard.appendChild(shipField);
-        summaryCard.appendChild(progressWrap);
         summaryCard.appendChild(totalsBox);
 
         const checkoutBtn = el('button', { class: 'btn btn-primary cart-checkout-btn', attrs: { id: 'checkout-btn' } }, 'Checkout');
@@ -3578,23 +3559,6 @@
             totalsBox.appendChild(el('div', {}, 'Shipping: ' + money(shipping)));
             totalsBox.appendChild(el('div', {}, 'Tax: ' + money(tax)));
             totalsBox.appendChild(el('div', { class: 'bold' }, 'Est. Total: ' + money(total)));
-            // Free shipping progress (DOM only, excluding PH flat special which uses threshold logic if considered DOM via PH? treat PH as DOM for threshold display)
-            const zone = classifyCountry(country);
-            if (zone === 'DOM') {
-                const threshold = SHIP_RATES.domesticFreeThreshold;
-                const progress = Math.min(1, subtotalCents / threshold);
-                progressWrap.classList.remove('hidden');
-                progressWrap.querySelector('.bar').style.setProperty('--pct', (progress * 100) + '%');
-                progressWrap.querySelector('.bar').style.width = (progress * 100) + '%';
-                const remaining = threshold - subtotalCents;
-                if (remaining > 0) {
-                    progressWrap.querySelector('.fs-label').textContent = 'Spend ' + money(remaining) + ' more for FREE domestic shipping';
-                } else {
-                    progressWrap.querySelector('.fs-label').textContent = 'Free domestic shipping unlocked!';
-                }
-            } else {
-                progressWrap.classList.add('hidden');
-            }
         }
         // Discount apply
         function evaluateDiscount() {

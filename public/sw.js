@@ -1,13 +1,39 @@
 // Basic service worker for offline shell + product list caching
-const APP_VERSION = '20251208-2';
+const APP_VERSION = '20260101';
 const VERSION = `v-${APP_VERSION}`;
 const CORE = [
     '/',
     '/index.html',
     `/styles.css?v=${APP_VERSION}`,
-    `/app.js?v=${APP_VERSION}`,
+    `/js/app.js?v=${APP_VERSION}`,
     `/components.js?v=${APP_VERSION}`,
-    '/en.json'
+    '/en.json',
+    // Core modules
+    '/js/state.js',
+    '/js/dom-helpers.js',
+    '/js/currency.js',
+    '/js/api.js',
+    '/js/cart.js',
+    '/js/favorites.js',
+    '/js/reviews.js',
+    '/js/customer-auth.js',
+    '/js/admin-auth.js',
+    '/js/navigation.js',
+    // Page modules
+    '/js/pages/home.js',
+    '/js/pages/catalog.js',
+    '/js/pages/product-detail.js',
+    '/js/pages/cart-page.js',
+    '/js/pages/favorites-page.js',
+    '/js/pages/my-orders.js',
+    // Admin modules
+    '/js/admin/admin-main.js',
+    '/js/admin/admin-products.js',
+    '/js/admin/admin-orders.js',
+    '/js/admin/admin-refunds.js',
+    '/js/admin/admin-reviews.js',
+    '/js/admin/admin-discounts.js',
+    '/js/admin/admin-analytics.js'
 ];
 
 self.addEventListener('install', e => {

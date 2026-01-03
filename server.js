@@ -9,7 +9,7 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const { v4: uuid } = require('uuid');
 const { PORT, ADMIN_TOKEN, ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME, STRIPE_SECRET, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE, PUBLIC_URL, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE, EMAIL_FROM, EMAIL_DEV_MODE, EMAIL_DEV_RECIPIENT } = require('./src/config/env');
-const { isAdmin, requireAdmin } = require('./src/middleware/admin');
+const { isAdmin, requireAdmin, issueAdminSession } = require('./src/middleware/admin');
 const db = require('./src/db');
 const { parseJSONField, validateProductInput, validateVariant, buildProductRow, computeCartTotals, getReviewSummary, computeProductInventory } = require('./src/utils');
 const { v4: uuidv4 } = require('uuid');
@@ -23,6 +23,71 @@ const MAX_VERIFICATION_ATTEMPTS = 5;
 
 const pendingVerificationCodes = new Map();
 const verificationIndexByEmail = new Map();
+
+const ADMIN_LOGIN_ATTEMPT_LIMIT = 5;
+const ADMIN_LOGIN_ATTEMPT_WINDOW_MS = 1000 * 60 * 5; // 5 minutes
+const ADMIN_LOGIN_LOCKOUT_MS = 1000 * 60 * 10; // 10 minutes
+const adminLoginAttempts = new Map();
+
+function buildAdminThrottleKey(email, req) {
+  const normalizedEmail = normalizeEmail(email) || 'unknown';
+  const ipCandidates = [];
+  if (Array.isArray(req?.ips) && req.ips.length) ipCandidates.push(...req.ips);
+  if (req?.ip) ipCandidates.push(req.ip);
+  const forwarded = req?.headers?.['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.trim()) {
+    forwarded.split(',').forEach(part => {
+      const trimmed = part.trim();
+      if (trimmed) ipCandidates.push(trimmed);
+    });
+  }
+  const ip = ipCandidates[0] || 'unknown';
+  return `${normalizedEmail}::${ip.toLowerCase()}`;
+}
+
+function getAdminAttemptEntry(key) {
+  const now = Date.now();
+  let entry = adminLoginAttempts.get(key);
+  if (!entry) {
+    entry = { attempts: 0, firstAttemptAt: now, lockedUntil: 0 };
+    adminLoginAttempts.set(key, entry);
+    return entry;
+  }
+  if (entry.lockedUntil && entry.lockedUntil <= now) {
+    entry.attempts = 0;
+    entry.firstAttemptAt = now;
+    entry.lockedUntil = 0;
+  } else if (!entry.lockedUntil && now - entry.firstAttemptAt > ADMIN_LOGIN_ATTEMPT_WINDOW_MS) {
+    entry.attempts = 0;
+    entry.firstAttemptAt = now;
+  }
+  return entry;
+}
+
+function recordAdminLoginFailure(entry) {
+  entry.attempts += 1;
+  if (entry.attempts >= ADMIN_LOGIN_ATTEMPT_LIMIT) {
+    entry.lockedUntil = Date.now() + ADMIN_LOGIN_LOCKOUT_MS;
+  }
+}
+
+function clearAdminLoginAttempts(key) {
+  adminLoginAttempts.delete(key);
+}
+
+function pruneAdminLoginAttempts() {
+  const now = Date.now();
+  for (const [key, entry] of adminLoginAttempts.entries()) {
+    const expiredWindow = !entry.lockedUntil && now - entry.firstAttemptAt > ADMIN_LOGIN_ATTEMPT_WINDOW_MS;
+    const lockExpired = entry.lockedUntil && entry.lockedUntil <= now;
+    if (expiredWindow || lockExpired) {
+      adminLoginAttempts.delete(key);
+    }
+  }
+}
+
+const adminLoginCleanupTimer = setInterval(pruneAdminLoginAttempts, 1000 * 60 * 5);
+if (typeof adminLoginCleanupTimer.unref === 'function') adminLoginCleanupTimer.unref();
 
 const EMAIL_SENDER = EMAIL_FROM || SMTP_USER || '';
 let mailTransport = null;
@@ -49,6 +114,7 @@ if (SMTP_HOST && EMAIL_SENDER) {
 }
 
 const app = express();
+app.set('trust proxy', true);
 // Disable default ETag so dynamic API responses (discount lookups) don't 304 and break client discount fetch logic
 app.set('etag', false);
 app.use(cors());
@@ -1075,6 +1141,18 @@ app.get('/api/products', (req, res) => {
   res.json({ page: parseInt(page, 10) || 1, pageSize: limit, total: countRow.c, products });
 });
 
+app.get('/api/products/low-stock', requireAdmin, (req, res) => {
+  const threshold = Math.max(0, Math.min(parseInt(req.query.threshold, 10) || 5, 10_000));
+  const rows = db.prepare('SELECT * FROM products WHERE deletedAt IS NULL').all();
+  const low = [];
+  for (const r of rows) {
+    const totalInv = db.prepare('SELECT SUM(inventory) as sum FROM variants WHERE productId=?').get(r.id).sum;
+    const inv = (totalInv !== null ? totalInv : r.baseInventory);
+    if (inv <= threshold) low.push({ id: r.id, title: r.title, totalInventory: inv, priceCents: r.priceCents });
+  }
+  res.json({ threshold, products: low });
+});
+
 app.get('/api/products/:id', (req, res) => {
   const row = db.prepare('SELECT * FROM products WHERE id=?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
@@ -1636,7 +1714,18 @@ app.post('/api/orders', (req, res) => {
     if (discountCode) db.prepare('UPDATE discounts SET usageCount = usageCount + 1 WHERE code=?').run(discountCode);
     metrics.ordersCreated++;
     audit('order', orderId, 'create', null, { subtotalCents, discountCents, totalCents });
-    return res.status(201).json({ id: orderId, status: 'created', subtotalCents, discountCents, shippingCents, shippingDiscountCents, totalCents: finalTotal, discountCode: discountCode || null, shippingCode: shippingCode || null });
+    return res.status(201).json({
+      id: orderId,
+      status: 'created',
+      subtotalCents,
+      discountCents,
+      shippingCents,
+      shippingDiscountCents,
+      totalCents: finalTotal,
+      discountCode: discountCode || null,
+      shippingCode: shippingCode || null,
+      estimatedDeliveryAt
+    });
   }
   if (!Array.isArray(directItems) || !directItems.length) return res.status(400).json({ error: 'cartId or non-empty items array required' });
   let subtotal = 0;
@@ -1725,7 +1814,18 @@ app.post('/api/orders', (req, res) => {
   if (discountCode) db.prepare('UPDATE discounts SET usageCount = usageCount + 1 WHERE code=?').run(discountCode);
   metrics.ordersCreated++;
   audit('order', orderId, 'create', null, { subtotalCents: subtotal, discountCents, totalCents });
-  res.status(201).json({ id: orderId, status: 'created', subtotalCents: subtotal, discountCents, shippingCents, shippingDiscountCents, totalCents, discountCode: discountCode || null, shippingCode: shippingCode || null });
+  res.status(201).json({
+    id: orderId,
+    status: 'created',
+    subtotalCents: subtotal,
+    discountCents,
+    shippingCents,
+    shippingDiscountCents,
+    totalCents,
+    discountCode: discountCode || null,
+    shippingCode: shippingCode || null,
+    estimatedDeliveryAt
+  });
 });
 
 app.get('/api/orders', requireAdmin, (req, res) => {
@@ -1999,14 +2099,26 @@ app.post('/api/admin/login', async (req, res) => {
     if (!email || !passwordValue) {
       return res.status(400).json({ error: 'Email and password are required' });
     }
+    const throttleKey = buildAdminThrottleKey(email, req);
+    const attemptEntry = getAdminAttemptEntry(throttleKey);
+    if (attemptEntry.lockedUntil && attemptEntry.lockedUntil > Date.now()) {
+      const retrySeconds = Math.ceil((attemptEntry.lockedUntil - Date.now()) / 1000);
+      return res.status(429).json({ error: `Too many attempts. Try again in ${retrySeconds} seconds.` });
+    }
     const userRow = selectUserByEmailStmt.get(email);
     if (!userRow || (userRow.role || '').toLowerCase() !== 'admin') {
+      recordAdminLoginFailure(attemptEntry);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
-  const ok = await comparePassword(passwordValue, userRow.passwordHash || '');
-  if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
-  const payload = { ...sanitizeUserRow(userRow), role: 'admin' };
-    res.json({ token: ADMIN_TOKEN, user: payload });
+    const ok = await comparePassword(passwordValue, userRow.passwordHash || '');
+    if (!ok) {
+      recordAdminLoginFailure(attemptEntry);
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    clearAdminLoginAttempts(throttleKey);
+    const payload = { ...sanitizeUserRow(userRow), role: 'admin' };
+    const session = issueAdminSession({ userId: userRow.id, email: userRow.email }, req);
+    res.json({ token: session.token, expiresAt: session.expiresAt, user: payload });
   } catch (err) {
     console.error('[admin] login failed', err);
     res.status(500).json({ error: 'Unable to login' });
@@ -2088,7 +2200,12 @@ app.get('/api/my-orders', (req, res) => {
   const email = session.user.email.trim().toLowerCase();
   if (!email) return res.status(401).json({ error: 'Sign-in required' });
   const rows = db.prepare('SELECT id,status,createdAt,paidAt,fulfilledAt,shippedAt,cancelledAt,completedAt,returnRequestedAt,returnReason,returnAdminStatus,returnAdminRespondedAt,returnClosedAt,subtotalCents,discountCents,totalCents,shippingCents,shippingDiscountCents,discountCode,shippingCode FROM orders WHERE LOWER(customerEmail)=LOWER(?) ORDER BY createdAt DESC LIMIT 200').all(email);
-  res.json({ orders: rows });
+  const itemsStmt = db.prepare('SELECT productId, variantId, titleSnapshot, quantity, unitPriceCents FROM order_items WHERE orderId=?');
+  const orders = rows.map(r => {
+    const items = itemsStmt.all(r.id);
+    return { ...r, items, itemCount: items.reduce((sum, item) => sum + item.quantity, 0) };
+  });
+  res.json({ orders });
 });
 
 // ---------- Discounts ----------
@@ -2188,19 +2305,7 @@ app.get('/api/discounts/:code', (req, res) => {
   res.json(d);
 });
 
-// ---------- Low Stock & CSV Export/Import ----------
-app.get('/api/products/low-stock', requireAdmin, (req, res) => {
-  const threshold = Math.max(0, Math.min(parseInt(req.query.threshold, 10) || 5, 10_000));
-  const rows = db.prepare('SELECT * FROM products WHERE deletedAt IS NULL').all();
-  const low = [];
-  for (const r of rows) {
-    const totalInv = db.prepare('SELECT SUM(inventory) as sum FROM variants WHERE productId=?').get(r.id).sum;
-    const inv = (totalInv !== null ? totalInv : r.baseInventory);
-    if (inv <= threshold) low.push({ id: r.id, title: r.title, totalInventory: inv, priceCents: r.priceCents });
-  }
-  res.json({ threshold, products: low });
-});
-
+// ---------- CSV Export/Import ----------
 function toCSVRow(fields) {
   return fields.map(f => {
     if (f == null) return '';
@@ -2320,7 +2425,19 @@ app.post('/api/upload/image', requireAdmin, upload.single('image'), (req, res) =
 
 app.get('/api/debug/admin-status', (req, res) => {
   const provided = req.header('X-Admin-Token');
-  res.json({ isAdmin: isAdmin(req), providedPresent: !!provided, providedPreview: provided ? provided.slice(0, 4) + '...' : null, expectedPreview: ADMIN_TOKEN.slice(0, 4) + '...' });
+  const admin = isAdmin(req);
+  const session = req.adminSession;
+  res.json({
+    isAdmin: admin,
+    providedPresent: !!provided,
+    providedPreview: provided ? provided.slice(0, 4) + '...' : null,
+    staticTokenPreview: ADMIN_TOKEN ? ADMIN_TOKEN.slice(0, 4) + '...' : null,
+    activeSession: session ? {
+      source: session.source || 'session',
+      tokenPreview: session.token ? session.token.slice(0, 6) + '...' : null,
+      expiresAt: typeof session.expiresAt === 'number' ? new Date(session.expiresAt).toISOString() : session.expiresAt || null
+    } : null
+  });
 });
 
 // Static legacy public (assets, uploads) & React build if present
@@ -2334,6 +2451,17 @@ app.use(express.static(publicDir, {
     }
   }
 }));
+
+const publicIndexPath = path.join(publicDir, 'index.html');
+app.get(/^(?!\/api\/)(?!\/uploads\/).*/, (req, res, next) => {
+  if (req.method !== 'GET') return next();
+  const accept = req.headers.accept || '';
+  if (!accept.includes('text/html')) return next();
+  const reactDist = path.join(__dirname, 'client', 'dist', 'index.html');
+  if (fs.existsSync(reactDist)) return next();
+  if (!fs.existsSync(publicIndexPath)) return next();
+  res.sendFile(publicIndexPath);
+});
 // --- React build (client/dist) integration (single unified block) ---
 (() => {
   const reactDist = path.join(__dirname, 'client', 'dist');
@@ -2366,7 +2494,14 @@ app.use(express.static(publicDir, {
 
 // Admin verify endpoint (simple token check)
 app.get('/api/admin/verify', requireAdmin, (req, res) => {
-  res.json({ ok: true, serverTime: new Date().toISOString() });
+  const session = req.adminSession || null;
+  res.json({
+    ok: true,
+    serverTime: new Date().toISOString(),
+    token: session?.token || null,
+    expiresAt: typeof session?.expiresAt === 'number' ? new Date(session.expiresAt).toISOString() : session?.expiresAt || null,
+    user: session && session.email ? { email: session.email, role: 'admin' } : null
+  });
 });
 
 // Admin: replace all products with curated seed set of 10 tees

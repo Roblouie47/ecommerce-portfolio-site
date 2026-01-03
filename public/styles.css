@@ -269,19 +269,20 @@ select {
   .home-catalog-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
     max-width: 100%;
-    align-items: center;
-    text-align: center;
+    align-items: stretch;
+  }
+}
+
+.home-product-card {
+  display: flex;
+  flex-direction: column;
   border: 1px solid rgba(148, 163, 184, .3);
   border-radius: 18px;
   overflow: hidden;
   min-height: 100%;
   transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease;
-
-  }
-  
+  background: #fff;
 }
-
-    
 
 .home-product-card:hover {
   transform: translateY(-4px);
@@ -3691,7 +3692,7 @@ h6 {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: .5px;
-  color: #475569;
+  color: #000000;
 }
 
 .field input[type=text],
@@ -3800,6 +3801,46 @@ h6 {
   padding: 1rem;
   min-width: calc(var(--chip-size) * .9);
   text-align: center;
+}
+
+.image-upload-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.upload-label {
+  background: rgb(237, 242, 255);
+  color: white;
+  border: 2px dashed #0078d4;
+  padding: 0.6rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background 0.3s ease;
+}
+
+.upload-label:hover {
+  background: rgba(255, 255, 255, 0.737);
+}
+
+.upload-label:active {
+  background: rgba(179, 204, 255, 0.737);
+}
+
+.hidden-input {
+  display: none;
+}
+
+.upload-status {
+  font-size: 0.85rem;
+  color: #000000;
+}
+.upload-status.success {
+  color: green;
+}
+.upload-status.error {
+  color: red;
 }
 
 .image-upload-actions {
@@ -5194,34 +5235,6 @@ h6 {
 .cart-form-control select {
   appearance: none;
   min-height: 44px;
-}
-
-.free-ship-progress {
-  display: flex;
-  flex-direction: column;
-  gap: .4rem;
-  background: var(--color-bg-alt);
-  padding: .85rem;
-  border-radius: var(--radius-lg);
-  margin-bottom: 1rem;
-}
-
-.free-ship-progress.hidden {
-  display: none;
-}
-
-.free-ship-progress .bar {
-  height: 6px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #60a5fa, #2563eb);
-  width: var(--pct, 0%);
-  transition: width .3s ease;
-}
-
-.free-ship-progress .fs-label {
-  font-size: .78rem;
-  font-weight: 600;
-  color: #0f1f3c;
 }
 
 .cart-totals {
@@ -6838,6 +6851,22 @@ body[data-route="admin"] .admin-section-btn:focus-visible {
   align-items: flex-start;
   justify-content: space-between;
   gap: .75rem;
+  flex-wrap: wrap;
+}
+
+.admin-refunds-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .65rem;
+  flex-wrap: wrap;
+}
+
+.admin-refunds-filters {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex-wrap: wrap;
 }
 
 .admin-refunds-title {
@@ -6907,6 +6936,15 @@ body[data-route="admin"] .admin-section-btn:focus-visible {
   display: inline-flex;
   align-items: center;
   margin-right: .35rem;
+}
+
+.admin-refunds-sort {
+  border: 1px solid rgba(148, 163, 184, .55);
+  border-radius: 8px;
+  padding: .35rem .7rem;
+  font: inherit;
+  min-width: 150px;
+  background: #fff;
 }
 
 .admin-refunds-closed-tools {
@@ -7157,6 +7195,7 @@ body[data-route="admin"] .admin-section-btn:focus-visible {
   border-radius: 12px;
   padding: .3rem .65rem;
   background: #fff;
+  max-width: 80%;
 }
 
 .refund-message--customer {
@@ -7170,9 +7209,100 @@ body[data-route="admin"] .admin-section-btn:focus-visible {
 .refund-message--admin {
   border-color: rgba(16, 185, 129, .35);
   background: rgba(16, 185, 129, .08);
-  text-align: right;
+  text-align: left;
   margin-left: auto;
   margin-right: 0;
+}
+
+/* Customer-facing refund message thread (my-orders page) */
+.refund-msg {
+  border-radius: 16px;
+  padding: .75rem 1rem;
+  max-width: 75%;
+  word-wrap: break-word;
+  display: flex;
+  flex-direction: column;
+  gap: .25rem;
+}
+
+.refund-msg--customer {
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  color: #fff;
+  margin-left: auto;
+  margin-right: 0;
+  border-bottom-right-radius: 4px;
+}
+
+.refund-msg--admin {
+  background: #f1f5f9;
+  color: #1e293b;
+  margin-right: auto;
+  margin-left: 0;
+  border: 1px solid rgba(148, 163, 184, .3);
+  border-bottom-left-radius: 4px;
+}
+
+.refund-msg-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: .5rem;
+  font-size: .7rem;
+}
+
+.refund-msg--customer .refund-msg-header {
+  flex-direction: row-reverse;
+}
+
+.refund-msg-sender {
+  font-weight: 600;
+  font-size: .75rem;
+}
+
+.refund-msg--customer .refund-msg-sender {
+  color: rgba(255, 255, 255, .9);
+}
+
+.refund-msg--admin .refund-msg-sender {
+  color: #475569;
+}
+
+.refund-msg-time {
+  font-size: .65rem;
+  opacity: .7;
+}
+
+.refund-msg--customer .refund-msg-time {
+  color: rgba(255, 255, 255, .75);
+}
+
+.refund-msg-body {
+  margin: 0;
+  font-size: .875rem;
+  line-height: 1.5;
+  display: block;
+  white-space: pre-wrap;
+}
+
+.refund-msg--customer .refund-msg-body {
+  color: #fff;
+}
+
+.refund-msg--admin .refund-msg-body {
+  color: #334155;
+}
+
+/* Container for customer refund messages */
+[data-customer-refund-messages] {
+  display: flex;
+  flex-direction: column;
+  gap: .6rem;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: .5rem;
+  background: #fafbfc;
+  border-radius: 12px;
+  margin-bottom: .75rem;
 }
 
 .refund-message-head {
