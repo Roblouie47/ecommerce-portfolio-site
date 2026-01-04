@@ -30,7 +30,9 @@ export const state = {
         showDeleted: false,
         ordersFilter: 'all',
         showClosedRefunds: false,
-        closedRefundQuery: '',
+        refundSearchQuery: '',
+        refundsSort: 'newest',
+        closedRefundsSort: 'closed-newest',
         openRefundDetails: new Set(),
         refundThreads: new Map(),
         analytics: null

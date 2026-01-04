@@ -500,9 +500,10 @@ export function renderAdmin() {
         el('div', { class: 'panel-header' },
             el('span', {}, 'Products'),
             el('div', { class: 'inline-fields', attrs: { style: 'gap:.5rem;align-items:center;' } },
-                el('div', { attrs: { style: 'display:inline-flex;' } },
+                el('div', { attrs: { style: 'display:inline-flex;gap:.35rem;' } },
                     el('button', { class: 'btn btn-small btn-danger', attrs: { id: 'bulk-delete-btn', disabled: 'true' } }, 'Delete Selected'),
-                    el('button', { class: 'btn btn-small btn-danger', attrs: { id: 'bulk-purge-btn', style: 'display:none;', disabled: 'true' } }, 'Delete Selected')
+                    el('button', { class: 'btn-restore btn-small btn-warning', attrs: { id: 'bulk-restore-btn', style: 'display:none;', disabled: 'true' } }, 'Restore Selected'),
+                    el('button', { class: 'btn btn-small btn-danger', attrs: { id: 'bulk-purge-btn', style: 'display:none;', disabled: 'true' } }, 'Delete Permanently')
                 ),
                 el('label', { class: 'flex gap-xs align-center', attrs: { for: 'toggle-show-deleted', style: 'gap:.3rem;cursor:pointer;font-size:.75rem;margin-left:.5rem;' } },
                     el('input', { attrs: { type: 'checkbox', id: 'toggle-show-deleted' } }),
@@ -523,8 +524,12 @@ export function renderAdmin() {
             showDeletedCb.addEventListener('change', async () => {
                 state.admin.showDeleted = showDeletedCb.checked;
                 localStorage.setItem('adminShowDeleted', state.admin.showDeleted ? '1' : '0');
-                await refreshAdminData();
-                notify(showDeletedCb.checked ? 'Showing deleted products' : 'Hiding deleted products', 'info', 2500);
+                refreshAdminTables();
+                try {
+                    await refreshAdminData();
+                } finally {
+                    notify(showDeletedCb.checked ? 'Showing deleted products' : 'Hiding deleted products', 'info', 2500);
+                }
             });
         }
     }
@@ -545,9 +550,9 @@ export function renderAdmin() {
     sectionRefs.set('orders', ordersWrap);
 
     if (state.admin.showClosedRefunds === undefined) state.admin.showClosedRefunds = false;
-    if (state.admin.closedRefundQuery === undefined) state.admin.closedRefundQuery = '';
     if (state.admin.refundSearchQuery === undefined) state.admin.refundSearchQuery = '';
     if (state.admin.refundsSort === undefined) state.admin.refundsSort = 'newest';
+    if (state.admin.closedRefundsSort === undefined) state.admin.closedRefundsSort = 'closed-newest';
 
     const refundsPanel = el('div', { class: 'panel admin-refunds-panel mt-md', attrs: { 'data-admin-section': 'refunds' } },
         el('div', { class: 'panel-header admin-refunds-header' },
@@ -596,15 +601,16 @@ export function renderAdmin() {
             el('div', { class: 'admin-refunds-closed-head' },
                 el('span', { class: 'admin-refunds-title tiny muted' }, 'Closed cases (trash bin)'),
                 el('div', { class: 'admin-refunds-closed-tools' },
-                    el('input', {
-                        class: 'admin-refunds-search',
-                        attrs: {
-                            type: 'search',
-                            id: 'closed-refunds-search',
-                            placeholder: 'Search order ID',
-                            value: state.admin.closedRefundQuery || ''
-                        }
-                    }),
+                    el('label', { class: 'admin-refunds-closed-sort' },
+                        el('span', { class: 'tiny muted' }, 'Sort by date/time'),
+                        el('select', {
+                            class: 'admin-refunds-sort',
+                            attrs: { id: 'closed-refunds-sort' }
+                        },
+                            el('option', { attrs: { value: 'closed-newest', selected: state.admin.closedRefundsSort === 'closed-newest' ? 'true' : null } }, 'Newest closed'),
+                            el('option', { attrs: { value: 'closed-oldest', selected: state.admin.closedRefundsSort === 'closed-oldest' ? 'true' : null } }, 'Oldest closed')
+                        )
+                    ),
                     el('span', { class: 'tiny muted' }, 'Restore to move cases back into the active queue.')
                 )
             ),
@@ -700,7 +706,7 @@ function refreshAdminTables() {
         if (deletedView) {
             actions.push(
                 el('button', { class: 'btn btn-compact btn-success', attrs: { 'data-restore': product.id } }, 'Restore'),
-                el('button', { class: 'btn btn-compact btn-danger', attrs: { 'data-destroy': product.id } }, 'Delete Forever')
+                el('button', { class: 'btn btn-compact btn-danger', attrs: { 'data-destroy': product.id } }, 'Delete Permanently')
             );
         } else {
             actions.push(el('button', { class: 'btn btn-compact btn-danger', attrs: { 'data-del': product.id } }, 'Delete'));
@@ -742,6 +748,7 @@ function refreshAdminTables() {
             tbody.appendChild(tr);
         }
         const bulkBtn = document.getElementById('bulk-delete-btn');
+        const restoreBtn = document.getElementById('bulk-restore-btn');
         const purgeBtn = document.getElementById('bulk-purge-btn');
         const getTableBody = () => pt.querySelector('tbody');
         const getRowCheckboxes = () => Array.from(getTableBody()?.querySelectorAll('input[data-select-id]') || []);
@@ -752,13 +759,20 @@ function refreshAdminTables() {
                 bulkBtn.textContent = label;
                 if (!state.admin.showDeleted && selected > 0) bulkBtn.removeAttribute('disabled'); else bulkBtn.setAttribute('disabled', 'true');
             }
+            if (restoreBtn) {
+                const restoreLabel = selected > 0 ? `Restore Selected (${selected})` : 'Restore Selected';
+                restoreBtn.textContent = restoreLabel;
+                if (state.admin.showDeleted && selected > 0) restoreBtn.removeAttribute('disabled'); else restoreBtn.setAttribute('disabled', 'true');
+            }
             if (purgeBtn) {
-                purgeBtn.textContent = label;
+                const purgeLabel = selected > 0 ? `Delete Permanently (${selected})` : 'Delete Permanently';
+                purgeBtn.textContent = purgeLabel;
                 if (state.admin.showDeleted && selected > 0) purgeBtn.removeAttribute('disabled'); else purgeBtn.setAttribute('disabled', 'true');
             }
         }
         // Toggle button visibility depending on view mode
         if (bulkBtn) bulkBtn.style.display = state.admin.showDeleted ? 'none' : '';
+        if (restoreBtn) restoreBtn.style.display = state.admin.showDeleted ? '' : 'none';
         if (purgeBtn) purgeBtn.style.display = state.admin.showDeleted ? '' : 'none';
         if (!pt._wired) {
             pt._wired = true;
@@ -793,6 +807,37 @@ function refreshAdminTables() {
                         previous.forEach(({ id, prev }) => { const p = state.productsById.get(id); if (p) p.deletedAt = prev; });
                         refreshAdminTables();
                         notify('Bulk delete failed: ' + err.message, 'error');
+                    }
+                });
+            }
+            if (restoreBtn && !restoreBtn._bulkRestoreWired) {
+                restoreBtn._bulkRestoreWired = true;
+                restoreBtn.addEventListener('click', async () => {
+                    const ids = getRowCheckboxes().filter(cb => cb.checked).map(cb => cb.getAttribute('data-select-id'));
+                    if (!ids.length) return;
+                    const originalText = restoreBtn.textContent;
+                    restoreBtn.textContent = 'Restoring…';
+                    restoreBtn.setAttribute('disabled', 'true');
+                    try {
+                        await bulkRestoreProducts(ids);
+                        ids.forEach(id => {
+                            const prod = state.productsById.get(id) || state.deletedBuffer.get(id);
+                            if (prod) {
+                                prod.deletedAt = null;
+                                state.deletedBuffer.delete(id);
+                            }
+                        });
+                        getRowCheckboxes().forEach(cb => cb.checked = false);
+                        refreshAdminTables();
+                        await refreshShopViews();
+                        notify('Restored ' + ids.length + ' product' + (ids.length === 1 ? '' : 's'), 'success', 4000);
+                        await refreshAdminData();
+                    } catch (err) {
+                        notify('Bulk restore failed: ' + err.message, 'error');
+                    } finally {
+                        restoreBtn.textContent = originalText;
+                        restoreBtn.removeAttribute('disabled');
+                        updateSelectionButtons();
                     }
                 });
             }
@@ -1007,7 +1052,7 @@ function refreshAdminTables() {
                     if (deletedView) {
                         actions.push(
                             el('button', { class: 'btn btn-compact btn-success', attrs: { 'data-restore': product.id } }, 'Restore'),
-                            el('button', { class: 'btn btn-compact btn-danger', attrs: { 'data-destroy': product.id } }, 'Delete Forever')
+                            el('button', { class: 'btn btn-compact btn-danger', attrs: { 'data-destroy': product.id } }, 'Delete Permanently')
                         );
                     } else {
                         actions.push(el('button', { class: 'btn btn-compact btn-danger', attrs: { 'data-del': product.id } }, 'Delete'));
@@ -1329,17 +1374,25 @@ function refreshAdminTables() {
     const refundsSummaryEl = document.getElementById('admin-refunds-summary');
     const refundsListEl = document.getElementById('admin-refunds-list');
     const refundsClosedEl = document.getElementById('admin-refunds-closed');
-    const closedSearchInput = document.getElementById('closed-refunds-search');
+    const closedSortSelect = document.getElementById('closed-refunds-sort');
     const closedBlock = refundsClosedEl?.closest('.admin-refunds-closed-block');
     const closedToggle = document.getElementById('closed-cases-toggle');
     const refundsSearchInput = document.getElementById('refunds-search-input');
     const refundsSortSelect = document.getElementById('refunds-sort-select');
+    const syncRefundSearchPlaceholder = () => {
+        if (!refundsSearchInput) return;
+        refundsSearchInput.placeholder = state.admin.showClosedRefunds ? 'Search closed order ID' : 'Search order ID';
+    };
+    syncRefundSearchPlaceholder();
     if (refundsSummaryEl || refundsListEl || refundsClosedEl) {
         const refundOrders = orders.filter(order => order.returnRequestedAt);
         const closedRefundsRaw = refundOrders.filter(order => !!order.returnClosedAt);
-        const closedQuery = (state.admin.closedRefundQuery || '').trim().toLowerCase();
         const searchQuery = (state.admin.refundSearchQuery || '').trim().toLowerCase();
-        const sortOrder = state.admin.refundsSort === 'oldest' ? 'oldest' : 'newest';
+        const showingClosed = !!state.admin.showClosedRefunds;
+        const openSortOrder = state.admin.refundsSort === 'oldest' ? 'oldest' : 'newest';
+        const closedSortOrder = state.admin.closedRefundsSort === 'closed-oldest' ? 'oldest' : 'newest';
+        const openQuery = showingClosed ? '' : searchQuery;
+        const closedQuery = showingClosed ? searchQuery : '';
         const matchesOrderId = (order, query) => {
             if (!query) return true;
             return String(order.id || '').toLowerCase().includes(query);
@@ -1350,19 +1403,23 @@ function refreshAdminTables() {
             const created = order?.createdAt ? new Date(order.createdAt).getTime() : null;
             return created || 0;
         };
-        const sortRefunds = (list) => {
+        const resolveClosedTimestamp = (order) => {
+            const closedAt = order?.returnClosedAt ? new Date(order.returnClosedAt).getTime() : null;
+            return closedAt ?? resolveRefundTimestamp(order);
+        };
+        const sortRefunds = (list, direction, resolver) => {
             const sorted = list.slice();
             sorted.sort((a, b) => {
-                const aTs = resolveRefundTimestamp(a);
-                const bTs = resolveRefundTimestamp(b);
-                return sortOrder === 'oldest' ? aTs - bTs : bTs - aTs;
+                const aTs = resolver(a);
+                const bTs = resolver(b);
+                return direction === 'oldest' ? aTs - bTs : bTs - aTs;
             });
             return sorted;
         };
-        const openRefundsRaw = refundOrders.filter(order => !order.returnClosedAt && matchesOrderId(order, searchQuery));
-        const openRefunds = sortRefunds(openRefundsRaw);
+        const openRefundsRaw = refundOrders.filter(order => !order.returnClosedAt && matchesOrderId(order, openQuery));
+        const openRefunds = sortRefunds(openRefundsRaw, openSortOrder, resolveRefundTimestamp);
         const closedFiltered = closedQuery ? closedRefundsRaw.filter(order => matchesOrderId(order, closedQuery)) : closedRefundsRaw;
-        const closedRefunds = sortRefunds(closedFiltered);
+        const closedRefunds = sortRefunds(closedFiltered, closedSortOrder, resolveClosedTimestamp);
         if (refundsSummaryEl) {
             const counts = { pending: 0, in_review: 0, approved: 0, refunded: 0, declined: 0 };
             let closedCount = 0;
@@ -1512,7 +1569,7 @@ function refreshAdminTables() {
             list.forEach(order => listEl.appendChild(buildRefundCard(order)));
         };
 
-        renderRefundList(refundsListEl, openRefunds, searchQuery ? 'No matches for that order ID.' : 'No active refund requests.');
+        renderRefundList(refundsListEl, openRefunds, openQuery ? 'No matches for that order ID.' : 'No active refund requests.');
         renderRefundList(refundsClosedEl, closedRefunds, closedQuery ? 'No matches for that order ID.' : 'No closed cases yet.');
 
         restoreOpenRefundDetails();
@@ -1537,13 +1594,16 @@ function refreshAdminTables() {
                 state.admin.showClosedRefunds = !state.admin.showClosedRefunds;
                 if (closedBlock) closedBlock.classList.toggle('is-hidden', !state.admin.showClosedRefunds);
                 if (refundsListEl) refundsListEl.classList.toggle('is-hidden', !!state.admin.showClosedRefunds);
+                syncRefundSearchPlaceholder();
                 setLabel();
+                refreshAdminTables();
             });
         }
-        if (closedSearchInput && !closedSearchInput._wired) {
-            closedSearchInput._wired = true;
-            closedSearchInput.addEventListener('input', (e) => {
-                state.admin.closedRefundQuery = e.target.value || '';
+        if (closedSortSelect && !closedSortSelect._wired) {
+            closedSortSelect._wired = true;
+            closedSortSelect.value = state.admin.closedRefundsSort || 'closed-newest';
+            closedSortSelect.addEventListener('change', (e) => {
+                state.admin.closedRefundsSort = e.target.value === 'closed-oldest' ? 'closed-oldest' : 'closed-newest';
                 refreshAdminTables();
             });
         }
@@ -2476,7 +2536,7 @@ function buildOrderActions(o, opts = {}) {
 async function refreshAdminData() {
     if (!state.admin.token) return;
     try {
-        await loadProducts(state.admin.showDeleted);
+        await loadProducts(state.admin.showDeleted, { forceFresh: true });
         // Prune deletedBuffer
         for (const [id, snap] of state.deletedBuffer.entries()) {
             const live = state.productsById.get(id);

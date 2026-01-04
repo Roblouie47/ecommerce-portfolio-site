@@ -1,4 +1,6 @@
 import { state, getRefundThreadStore, ensureAnalyticsState, persistCart } from '../state/index.js';
+import { clearAdminAuth } from '../auth/admin.js';
+import { notify } from '../utils/helpers.js';
 
 /**
  * Base API fetch wrapper with authentication
@@ -45,9 +47,15 @@ export async function apiFetch(url, options = {}) {
  * Loads all products from the server
  * @param {boolean} [includeDeleted=false] - Whether to include soft-deleted products
  */
-export async function loadProducts(includeDeleted = false) {
-    const endpoint = includeDeleted ? '/api/products?deleted=true' : '/api/products';
-    const response = await apiFetch(endpoint);
+export async function loadProducts(includeDeleted = false, options = {}) {
+    const { forceFresh = false } = options;
+    const params = new URLSearchParams();
+    if (includeDeleted) params.set('includeDeleted', 'true');
+    if (forceFresh) params.set('_', Date.now().toString());
+    const query = params.toString();
+    const endpoint = query ? `/api/products?${query}` : '/api/products';
+    const fetchOptions = forceFresh ? { cache: 'no-store' } : {};
+    const response = await apiFetch(endpoint, fetchOptions);
     
     // API returns paginated response { page, pageSize, total, products }
     const products = Array.isArray(response) ? response : (response.products || response.data || []);
@@ -112,7 +120,7 @@ export async function restoreProduct(id) {
  * @returns {Promise<Object>}
  */
 export async function destroyProduct(id) {
-    return apiFetch(`/api/products/${id}/destroy`, { method: 'DELETE' });
+    return apiFetch(`/api/products/${id}/permanent`, { method: 'DELETE' });
 }
 
 /**
@@ -147,7 +155,7 @@ export async function bulkRestoreProducts(ids) {
  * @returns {Promise<Object>}
  */
 export async function bulkDestroyProducts(ids) {
-    return apiFetch('/api/products/bulk-destroy', {
+    return apiFetch('/api/products/bulk-permanent-delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids })

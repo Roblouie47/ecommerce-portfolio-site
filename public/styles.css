@@ -3662,6 +3662,32 @@ h6 {
   box-shadow: var(--shadow-2);
 }
 
+.btn-restore {
+ --btn-bg: var(--primary);
+  --btn-bg-hover: var(--primary-accent);
+  --btn-color: #fff;
+  border: none;
+  background: #3f568b;
+  color: var(--btn-color);
+  padding: .55rem .9rem;
+  font-size: .85rem;
+  line-height: 1.2;
+  font-weight: 600;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .3rem;
+  text-decoration: none;
+  transition: background .2s ease, transform .15s ease, box-shadow .2s ease;
+}
+
+.btn-restore:hover {
+  background-color: #293d6c;
+  box-shadow: var(--shadow-2);
+}
+
 /* Ghost variant */
 .btn-ghost {
   background: transparent;
