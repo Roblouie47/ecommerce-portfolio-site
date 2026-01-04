@@ -1,5 +1,41 @@
+
 const express = require('express');
 const router = express.Router();
+
+// Webhook endpoint for PayMongo payment confirmation
+router.post('/paymongo-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  // Replace with your actual webhook secret from PayMongo dashboard
+  const WEBHOOK_SECRET = process.env.PAYMONGO_WEBHOOK_SECRET || 'whsec_xxx';
+  // Verify signature
+  if (!verifyPayMongoSignature(req, WEBHOOK_SECRET)) {
+    return res.status(401).json({ error: 'Invalid webhook signature' });
+  }
+  let event;
+  try {
+    event = JSON.parse(req.body);
+  } catch {
+    return res.status(400).json({ error: 'Invalid webhook payload' });
+  }
+  // Validate event type and payment status
+  if (event.type === 'payment_intent.payment_succeeded') {
+    const intent = event.data.attributes;
+    // TODO: Validate intent metadata and create order in DB
+    // Example: check intent.metadata for customer info, cart, etc.
+    // Only create order if payment is confirmed
+    // ...existing code to create order securely...
+    return res.json({ received: true });
+  }
+  res.json({ ignored: true });
+});
+// Webhook signature verification helper
+function verifyPayMongoSignature(req, secret) {
+  const signature = req.headers['paymongo-signature'];
+  if (!signature || !secret) return false;
+  // PayMongo sends a SHA256 HMAC signature of the raw body
+  const crypto = require('crypto');
+  const expected = crypto.createHmac('sha256', secret).update(req.rawBody).digest('hex');
+  return signature === expected;
+}
 
 // TODO: Replace with your actual PayMongo secret key
 const PAYMONGO_SECRET_KEY = process.env.PAYMONGO_SECRET_KEY || 'sk_test_xxx';

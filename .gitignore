@@ -3,4 +3,6 @@ npm-debug.log
 server.log
 server.err
 .env
+.env.example
 .DS_Store
+paymongo.js
