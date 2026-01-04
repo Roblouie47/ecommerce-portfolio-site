@@ -457,16 +457,33 @@ export function showCheckoutModal() {
                 shippingField
             );
             
+
+            // Payment method selection
+            const paymentField = el('div', { class: 'field full-span' },
+                el('label', {}, 'Payment Method'),
+                el('div', { class: 'payment-method-options' },
+                    el('label', { class: 'payment-method-label' },
+                        el('input', { attrs: { type: 'radio', name: 'payment_method', value: 'gcash', checked: true } }),
+                        ' GCash (e-wallet)'
+                    ),
+                    el('label', { class: 'payment-method-label' },
+                        el('input', { attrs: { type: 'radio', name: 'payment_method', value: 'card' } }),
+                        ' Debit/Credit Card'
+                    )
+                )
+            );
+
             const actionsRow = el('div', { class: 'checkout-actions-row full-span' },
                 el('button', { class: 'btn btn-success', attrs: { type: 'submit' } }, 'Place Order'),
                 el('button', { class: 'btn btn-outline', attrs: { type: 'button', id: 'cancel-checkout' } }, 'Cancel'),
                 el('span', { class: 'checkout-secure-note' }, 'No payment captured until confirmation.')
             );
-            
+
             const form = el('form', { class: 'checkout-form-grid', attrs: { id: 'checkout-form', autocomplete: 'off' } },
                 contactSection,
                 addressSection,
                 codeSection,
+                paymentField,
                 actionsRow
             );
             
@@ -679,64 +696,71 @@ export function showCheckoutModal() {
                     address: /** @type {HTMLTextAreaElement} */ (form.querySelector('#cust-address')).value.trim(),
                     country: /** @type {HTMLSelectElement} */ (form.querySelector('#cust-country')).value.trim()
                 };
-                
                 if (!customer.name || !customer.email || !customer.phone || !customer.address) { 
                     notify('Fill all customer info', 'warn'); 
                     return; 
                 }
-                
                 const discountCode = discountApplied ? (dcInput.value.trim().toUpperCase()) : undefined;
                 const shippingCode = shipDiscountApplied ? (shipInput.value.trim().toUpperCase()) : undefined;
-                const stripeAvailable = Boolean(/** @type {any} */ (window).Stripe && state.meta && state.meta.stripePublishableKey);
-                let attemptedStripe = false;
-                
-                const placeManualOrder = async () => {
-                    const orderRes = await createOrder(cartLines, customer, discountCode, shippingCode);
-                    state.cart = [];
-                    saveCart();
-                    if (state.admin.token) {
-                        loadOrdersAdmin().then(() => { 
-                            if (state.currentRoute === 'admin') refreshAdminTables(); 
-                        });
-                    }
-                    close();
-                    const etaCopy = buildEtaCopy(orderRes.estimatedDeliveryAt, deliveryWindowLabel, deliveryWindowDetail);
-                    state.lastOrder = {
-                        id: orderRes.id,
-                        subtotalCents: orderRes.subtotalCents,
-                        discountCents: orderRes.discountCents,
-                        shippingCents: orderRes.shippingCents,
-                        shippingDiscountCents: orderRes.shippingDiscountCents,
-                        totalCents: orderRes.totalCents,
-                        lines: cartLines,
-                        customer,
-                        etaLabel: etaCopy.label,
-                        etaDetail: etaCopy.detail,
-                        estimatedDeliveryAt: orderRes.estimatedDeliveryAt || null
-                    };
-                    navigate('order-confirmation');
-                };
-                
+                // Get selected payment method
+                const paymentMethod = /** @type {HTMLInputElement|null} */(form.querySelector('input[name="payment_method"]:checked'))?.value || 'gcash';
+                // Prepare cart for PayMongo (with priceCents and qty)
+                const paymongoCart = cartLines.map(line => ({
+                    productId: line.productId,
+                    priceCents: line.unitPriceCents,
+                    qty: line.quantity,
+                    variantId: line.variantId || undefined
+                }));
                 try {
                     showSpinner(true);
-                    if (stripeAvailable) {
-                        attemptedStripe = true;
-                        notify('Redirecting to secure payment…', 'info', 4000);
-                        close();
-                        await startStripeCheckout(cartLines, customer, discountCode, shippingCode);
+                    // Call backend to create PayMongo payment intent
+                    const res = await apiFetch('/api/paymongo-intent', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            cart: paymongoCart,
+                            customer,
+                            discountCode,
+                            shippingCode,
+                            paymentMethod
+                        })
+                    });
+                    if (res.next_action && res.next_action.redirect && res.next_action.redirect.url) {
+                        window.location.href = res.next_action.redirect.url;
                         return;
-                    }
-                    await placeManualOrder();
-                } catch (err) {
-                    if (attemptedStripe) {
-                        notify('Stripe checkout unavailable: ' + err.message + '. Falling back to direct checkout.', 'warn', 6000);
-                        try {
-                            await placeManualOrder();
-                        } catch (retryErr) {
-                            notify('Checkout failed: ' + retryErr.message, 'error', 6000);
-                        }
+                    } else if (res.status === 'succeeded') {
+                        notify('Payment successful!', 'success');
+                        close();
+                        // Optionally, show order confirmation
+                        navigate('order-confirmation');
+                        return;
                     } else {
-                        notify('Checkout failed: ' + err.message, 'error', 6000);
+                        notify('Payment could not be started. Try again.', 'error');
+                    }
+                } catch (err) {
+                    // Fallback: try manual order creation if PayMongo fails
+                    try {
+                        const orderRes = await createOrder(cartLines, customer, discountCode, shippingCode);
+                        state.cart = [];
+                        saveCart();
+                        close();
+                        const etaCopy = buildEtaCopy(orderRes.estimatedDeliveryAt, deliveryWindowLabel, deliveryWindowDetail);
+                        state.lastOrder = {
+                            id: orderRes.id,
+                            subtotalCents: orderRes.subtotalCents,
+                            discountCents: orderRes.discountCents,
+                            shippingCents: orderRes.shippingCents,
+                            shippingDiscountCents: orderRes.shippingDiscountCents,
+                            totalCents: orderRes.totalCents,
+                            lines: cartLines,
+                            customer,
+                            etaLabel: etaCopy.label,
+                            etaDetail: etaCopy.detail,
+                            estimatedDeliveryAt: orderRes.estimatedDeliveryAt || null
+                        };
+                        navigate('order-confirmation');
+                    } catch (retryErr) {
+                        notify('Checkout failed: ' + retryErr.message, 'error', 6000);
                     }
                 } finally {
                     showSpinner(false);

@@ -114,7 +114,10 @@ if (SMTP_HOST && EMAIL_SENDER) {
 }
 
 const app = express();
+// --- PayMongo route ---
+const paymongoRoute = require('./src/routes/paymongo');
 app.set('trust proxy', true);
+app.use('/api', paymongoRoute);
 // Disable default ETag so dynamic API responses (discount lookups) don't 304 and break client discount fetch logic
 app.set('etag', false);
 app.use(cors());
