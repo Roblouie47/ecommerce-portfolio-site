@@ -183,37 +183,9 @@ export function renderCart() {
         el('p', { class: 'muted tiny' }, 'All duties calculated at checkout')
     ));
 
-    // Discount field
-    const discountField = el('div', { class: 'cart-form-field' });
-    discountField.appendChild(el('label', { attrs: { for: 'cart-discount-code' } }, 'Discount code'));
-    const discountInput = el('input', { attrs: { id: 'cart-discount-code', type: 'text', value: state.cartPage.discountCode || '', placeholder: 'Enter code' } });
-    const discountApplyBtn = el('button', { class: 'btn btn-small', attrs: { id: 'cart-discount-apply', type: 'button' } }, state.cartPage.discountApplied ? 'Applied' : 'Apply');
-    if (state.cartPage.discountApplied) discountApplyBtn.classList.add('applied');
-    discountField.appendChild(el('div', { class: 'cart-form-control' }, discountInput, discountApplyBtn));
-
-    // Ship to field
-    const shipField = el('div', { class: 'cart-form-field' });
-    shipField.appendChild(el('label', { attrs: { for: 'cart-ship-country' } }, 'Ship to'));
-    const shipSelect = el('select', { attrs: { id: 'cart-ship-country' } },
-        el('option', { attrs: { value: 'PH' } }, 'Philippines'),
-        el('option', { attrs: { value: 'US' } }, 'United States'),
-        el('option', { attrs: { value: 'CA' } }, 'Canada'),
-        el('option', { attrs: { value: 'DE' } }, 'Germany'),
-        el('option', { attrs: { value: 'FR' } }, 'France'),
-        el('option', { attrs: { value: 'ES' } }, 'Spain'),
-        el('option', { attrs: { value: 'IT' } }, 'Italy'),
-        el('option', { attrs: { value: 'JP' } }, 'Japan'),
-        el('option', { attrs: { value: 'AU' } }, 'Australia'),
-        el('option', { attrs: { value: 'OTHER' } }, 'Other / International')
-    );
-    /** @type {HTMLSelectElement} */ (shipSelect).value = state.cartPage.shipCountry || 'PH';
-    shipField.appendChild(el('div', { class: 'cart-form-control' }, shipSelect));
-
     // Totals box
     const totalsBox = el('div', { class: 'cart-totals' });
 
-    summaryCard.appendChild(discountField);
-    summaryCard.appendChild(shipField);
     summaryCard.appendChild(totalsBox);
 
     const checkoutBtn = el('button', { class: 'btn btn-primary cart-checkout-btn', attrs: { id: 'checkout-btn' } }, 'Checkout');
@@ -260,98 +232,22 @@ export function renderCart() {
         return t;
     }
 
-    let estDiscount = 0;
-
     function recalcTotals() {
         const subtotalCents = cartSubtotalCents();
-        const country = /** @type {HTMLSelectElement} */ (shipSelect).value;
-        state.cartPage.shipCountry = country;
-        const shipping = baseShip(subtotalCents, country) + perItemShip(country);
+        // Shipping and country selection removed
+        const shipping = 0;
         const tax = Math.round(subtotalCents * 0.075);
-        const total = subtotalCents - estDiscount + shipping + tax;
+        const total = subtotalCents + shipping + tax;
 
         // Update totals display
         totalsBox.innerHTML = '';
         totalsBox.appendChild(el('div', {}, 'Subtotal: ' + money(subtotalCents)));
-        if (estDiscount > 0) totalsBox.appendChild(el('div', { class: 'muted' }, 'Discount: -' + money(estDiscount)));
         totalsBox.appendChild(el('div', {}, 'Shipping: ' + money(shipping)));
         totalsBox.appendChild(el('div', {}, 'Tax: ' + money(tax)));
         totalsBox.appendChild(el('div', { class: 'bold' }, 'Est. Total: ' + money(total)));
     }
 
-    function styleApply(applied) {
-        if (applied) {
-            discountApplyBtn.classList.add('applied');
-            discountApplyBtn.textContent = 'Applied';
-        } else {
-            discountApplyBtn.classList.remove('applied');
-            discountApplyBtn.textContent = 'Apply';
-        }
-    }
-
-    function evaluateDiscount() {
-        const raw = /** @type {HTMLInputElement} */ (discountInput).value.trim().toUpperCase();
-        /** @type {HTMLInputElement} */ (discountInput).value = raw;
-        
-        if (!raw) {
-            estDiscount = 0;
-            state.cartPage.discountApplied = false;
-            state.cartPage.discountCode = '';
-            recalcTotals();
-            styleApply(false);
-            return;
-        }
-
-        apiFetch('/api/discounts/' + encodeURIComponent(raw)).then(d => {
-            const now = Date.now();
-            const expired = d.expiresAt && new Date(d.expiresAt).getTime() <= now;
-            if (d.type === 'ship' || expired) {
-                notify('Discount not applicable', 'warn');
-                estDiscount = 0;
-                state.cartPage.discountApplied = false;
-                state.cartPage.discountCode = '';
-                recalcTotals();
-                styleApply(false);
-                return;
-            }
-            const subtotalCents = cartSubtotalCents();
-            if (subtotalCents < d.minSubtotalCents) {
-                notify('Subtotal too low for code', 'warn');
-                estDiscount = 0;
-                state.cartPage.discountApplied = false;
-                state.cartPage.discountCode = '';
-                recalcTotals();
-                styleApply(false);
-                return;
-            }
-            if (d.type === 'percent') estDiscount = Math.floor(subtotalCents * (d.value / 100));
-            else if (d.type === 'fixed') estDiscount = Math.min(subtotalCents, d.value);
-            else estDiscount = 0;
-            state.cartPage.discountApplied = estDiscount > 0;
-            state.cartPage.discountCode = state.cartPage.discountApplied ? raw : '';
-            recalcTotals();
-            styleApply(state.cartPage.discountApplied);
-            if (state.cartPage.discountApplied) notify('Discount applied', 'success');
-        }).catch(err => {
-            notify('Invalid code', 'error');
-            estDiscount = 0;
-            state.cartPage.discountApplied = false;
-            state.cartPage.discountCode = '';
-            recalcTotals();
-            styleApply(false);
-        });
-    }
-
-    // Wire up discount apply
-    discountApplyBtn.addEventListener('click', evaluateDiscount);
-    shipSelect.addEventListener('change', () => recalcTotals());
-
-    // Rehydrate previous discount if applied
-    if (state.cartPage.discountApplied && state.cartPage.discountCode) {
-        evaluateDiscount();
-    } else {
-        recalcTotals();
-    }
+    recalcTotals();
 
     // --- Event Handlers ---
     panel.addEventListener('change', e => {
