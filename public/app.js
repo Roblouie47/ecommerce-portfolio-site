@@ -231,6 +231,16 @@
     };
 
     const rootEl = document.getElementById('app-root');
+    // Global event delegation for all [data-add] buttons
+    if (rootEl) {
+        rootEl.addEventListener('click', function(e) {
+            const btnAdd = e.target.closest('[data-add]');
+            if (btnAdd) {
+                addToCart(btnAdd.getAttribute('data-add'), 1);
+                notify('Added to cart', 'success');
+            }
+        });
+    }
     const modalRoot = document.getElementById('modal-root');
     const spinnerRoot = document.getElementById('spinner-root');
 
@@ -1489,12 +1499,21 @@
     function setCartQuantity(productId, qty, variantId = null) {
         const item = findCartItem(productId, variantId);
         if (!item) return;
-        if (qty <= 0) state.cart = state.cart.filter(ci => ci !== item); else item.quantity = qty;
-        saveCart();
+        if (qty <= 0) {
+            state.cart = state.cart.filter(ci => ci !== item);
+            saveCart();
+            notify('Removed from cart', 'info');
+        } else {
+            item.quantity = qty;
+            saveCart();
+            notify('Cart updated', 'success');
+        }
     }
     function removeFromCart(productId, variantId = null) {
+        const before = state.cart.length;
         state.cart = state.cart.filter(ci => !(ci.productId === productId && (ci.variantId || null) === (variantId || null)));
         saveCart();
+        if (state.cart.length < before) notify('Removed from cart', 'info');
     }
     function cartSubtotalCents() {
         return state.cart.reduce((sum, line) => {
@@ -1520,7 +1539,12 @@
     }
     function notify(message, type = 'info', timeout = 3000, options = {}) {
         let root = document.getElementById('toast-root');
-        if (!root) { root = el('div', { attrs: { id: 'toast-root' } }); document.body.appendChild(root); }
+        // If missing or not in DOM, recreate and append
+        if (!root || !document.body.contains(root)) {
+            root = el('div', { attrs: { id: 'toast-root' } });
+            document.body.appendChild(root);
+        }
+        // Always show toast-root when displaying a toast
         root.classList.remove('hidden');
         root.style.position = 'fixed';
         root.style.bottom = '1rem';
@@ -1554,7 +1578,13 @@
         let timer = setTimeout(fade, remaining);
         function fade() {
             box.classList.add('fade-out');
-            box.addEventListener('transitionend', () => box.remove(), { once: true });
+            box.addEventListener('transitionend', () => {
+                box.remove();
+                // If no more toasts, hide the toast-root
+                if (!root.querySelector('.alert')) {
+                    root.classList.add('hidden');
+                }
+            }, { once: true });
         }
         box.addEventListener('mouseenter', () => {
             clearTimeout(timer);
@@ -2419,7 +2449,12 @@
             const favBtn = e.target.closest('[data-fav]');
             if (favBtn) { e.preventDefault(); toggleFavorite(favBtn.getAttribute('data-fav')); return; }
             const btnAdd = e.target.closest('[data-add]');
-            if (btnAdd) { addToCart(btnAdd.getAttribute('data-add'), 1); return; }
+            if (btnAdd) {
+                addToCart(btnAdd.getAttribute('data-add'), 1);
+                console.log('[DEBUG] Add to cart clicked, notify should show');
+                notify('Added to cart', 'success');
+                return;
+            }
             const btnView = e.target.closest('[data-view-id]');
             if (btnView) { navigate('product', { id: btnView.getAttribute('data-view-id') }); }
         });
@@ -3337,6 +3372,7 @@
             if (prod.variants && prod.variants.length && !selectedVariant) { notify('Select a variant', 'warn'); return; }
             if (selectedVariant) { const v = prod.variants.find(v => v.id === selectedVariant); if (v && v.inventory < qty) { notify('Not enough variant stock', 'warn'); return; } }
             addToCart(prod.id, qty, selectedVariant);
+            notify('Added to cart', 'success');
         });
         setTimeout(() => galleryWrap.focus(), 30);
     }

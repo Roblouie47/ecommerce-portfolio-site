@@ -3,7 +3,7 @@ import { state, getRefundStatus, formatRefundStatus, describeRefundUsage, getRef
 import { getRootEl, notify, formatDateTimeStamp } from '../utils/helpers.js';
 import { money } from '../utils/currency.js';
 import { navigate } from '../router/index.js';
-import { loadCustomerOrders, loadProducts, apiFetch, sendCustomerRefundMessage } from '../api/index.js';
+import { loadCustomerOrders, loadProducts, apiFetch, sendCustomerRefundMessage, customerReopenRefundCase } from '../api/index.js';
 import { showModal } from '../components/index.js';
 import { showCustomerAuthModal } from '../auth/customer.js';
 
@@ -389,8 +389,89 @@ export function renderMyOrders() {
             !order.paidAt && !order.cancelledAt ? el('button', { class: 'mo-button mo-button--primary mo-button--compact', attrs: { 'data-pay': order.id } }, 'Pay now') : null,
             order.shippedAt && !order.completedAt ? el('button', { class: 'mo-button mo-button--subtle mo-button--compact', attrs: { 'data-track': order.id } }, 'Track order') : null,
             order.shippedAt && !order.returnRequestedAt && !order.cancelledAt ? el('button', { class: 'mo-button mo-button--ghost mo-button--compact', attrs: { 'data-return': order.id } }, 'Return / Refund') : null,
-            el('button', { class: 'mo-button mo-button--ghost mo-button--compact', attrs: { 'data-toggle-detail': order.id, 'aria-expanded': 'false' } }, 'View details')
-        );
+            el('button', { class: 'mo-button mo-button--ghost mo-button--compact', attrs: { 'data-toggle-detail': order.id, 'aria-expanded': 'false' } }, 'View details'),
+            // Add review button for delivered orders
+             order.completedAt && Array.isArray(order.items) ?
+        el('button', {
+            class: 'mo-button mo-button--ghost mo-button--compact mo-review-btn',
+            attrs: {
+                type: 'button',
+                'data-order-id': order.id
+            }
+        }, 'Write Review')
+        : null
+);
+
+
+    function handleReviewButtonClick(e) {
+    const btn = e.target.closest('.mo-review-btn');
+    if (!btn) return;
+    const orderId = btn.getAttribute('data-order-id');
+    const order = deriveMyOrders().find(o => String(o.id) === String(orderId));
+    if (!order) return;
+    const items = (order.items || []).map(enrichItem).filter(Boolean);
+
+    // If only one item, open review directly
+    if (items.length === 1) {
+        openReviewModal(items[0]);
+        return;
+    }
+
+    // If multiple items, show selection modal
+    import('../components/reviews.js').then(({ createReviewForm }) => {
+        const modalRoot = document.getElementById('modal-root');
+        showModal(close => {
+            const wrap = el('div', { class: 'modal review-select-modal' });
+            wrap.appendChild(el('button', { class: 'modal-close', attrs: { type: 'button' } }, '×'));
+            wrap.appendChild(el('h2', {}, 'Select a product to review'));
+            const list = el('div', { class: 'review-product-list' },
+                ...items.map(item => {
+                    const btn = el('button', {
+                        class: 'mo-button mo-button--ghost mo-button--compact',
+                        attrs: { type: 'button' }
+                    }, item.title);
+                    btn.addEventListener('click', () => {
+                        close();
+                        openReviewModal(item);
+                    });
+                    return btn;
+                })
+            );
+            wrap.appendChild(list);
+            modalRoot.appendChild(wrap);
+            wrap.querySelector('.modal-close').addEventListener('click', close);
+        });
+    });
+
+    function openReviewModal(item) {
+        import('../components/reviews.js').then(({ createReviewForm }) => {
+            const modalRoot = document.getElementById('modal-root');
+            showModal(close => {
+                const wrap = el('div', { class: 'modal review-modal' });
+                wrap.appendChild(el('button', { class: 'modal-close', attrs: { type: 'button' } }, '×'));
+                wrap.appendChild(el('h2', {}, `Review: ${item.title}`));
+                const form = createReviewForm(item, {
+                    onSubmit: async (reviewData) => {
+            try {
+                await apiFetch(`/api/products/${item.productId}/reviews`, {
+                method: 'POST',
+                body: JSON.stringify(reviewData),
+                headers: { 'Content-Type': 'application/json' }
+            });
+                notify('Review submitted!', 'success');
+                close();
+                } catch (err) {
+                notify('Failed to submit review', 'error');
+            }
+        }
+                });
+                wrap.appendChild(form);
+                modalRoot.appendChild(wrap);
+                wrap.querySelector('.modal-close').addEventListener('click', close);
+            });
+        });
+    }
+}
 
         const detailSections = [];
         const refundSection = buildRefundDetailSection(order);
@@ -465,6 +546,38 @@ export function renderMyOrders() {
         /** @type {HTMLButtonElement} */ (refundShortcutBtn).disabled = refundCount === 0;
     }
 
+    // Handler to open review modal (must be in scope for renderOrders)
+    function handleReviewButtonClick(e) {
+        const btn = e.target.closest('[data-review-product]');
+        if (!btn) return;
+        const productId = btn.getAttribute('data-review-product');
+        const orderId = btn.getAttribute('data-order-id');
+        const product = state.products?.find(p => String(p.id) === String(productId));
+        if (!product) {
+            notify('Product not found for review.', 'error');
+            return;
+        }
+        // Show review modal
+        import('../components/reviews.js').then(({ createReviewForm }) => {
+            const modalRoot = document.getElementById('modal-root');
+            showModal(close => {
+                const wrap = el('div', { class: 'modal review-modal' });
+                wrap.appendChild(el('button', { class: 'modal-close', attrs: { type: 'button' } }, '×'));
+                wrap.appendChild(el('h2', {}, `Review: ${product.title}`));
+                const form = createReviewForm(product, {
+                    onSubmit: (reviewData) => {
+                        // TODO: Submit review via API
+                        notify('Review submitted (demo only)', 'success');
+                        close();
+                    }
+                });
+                wrap.appendChild(form);
+                modalRoot.appendChild(wrap);
+                wrap.querySelector('.modal-close').addEventListener('click', close);
+            });
+        });
+    }
+
     function renderOrders() {
         const orders = deriveMyOrders();
         const enriched = orders.map(o => mergedOrder(o)).filter(Boolean);
@@ -484,7 +597,12 @@ export function renderMyOrders() {
         }
         content.innerHTML = '';
         filtered.forEach(order => {
-            content.appendChild(buildOrderCard(order));
+            const card = buildOrderCard(order);
+            // Attach review button handler(s)
+            card.querySelectorAll('.mo-review-btn').forEach(btn => {
+                btn.addEventListener('click', handleReviewButtonClick);
+            });
+            content.appendChild(card);
         });
     }
 
@@ -680,7 +798,7 @@ export function renderMyOrders() {
 
     async function requestRefundReopen(orderId) {
         if (!orderId) return;
-        await sendCustomerRefundMessage(orderId, 'Customer requested to reopen this refund case.');
+        await customerReopenRefundCase(orderId);
     }
 
     async function submitCustomerRefundForm(form, rootNode) {

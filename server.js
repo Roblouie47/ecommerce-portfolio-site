@@ -1,3 +1,15 @@
+// ...existing code...
+
+// ...existing code...
+
+// Place this after all requires and after app is initialized
+
+// ...existing code...
+
+// Register refund-reopen endpoint after app and all requires
+
+// ...existing code...
+
 // Clean, rebuilt server below
 const express = require('express');
 const cors = require('cors');
@@ -114,6 +126,35 @@ if (SMTP_HOST && EMAIL_SENDER) {
 }
 
 const app = express();
+
+// Register refund-reopen endpoint after app and middleware setup
+app.post('/api/orders/:id/refund-reopen', (req, res) => {
+  const session = getCustomerSession(req);
+  if (!session || !session.user || !session.user.email) {
+    return res.status(401).json({ error: 'Login required' });
+  }
+  const order = db.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Not found' });
+  const sessionEmail = session.user.email.trim().toLowerCase();
+  const orderEmail = (order.customerEmail || '').trim().toLowerCase();
+  if (!sessionEmail || !orderEmail || sessionEmail !== orderEmail) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+  if (!order.returnRequestedAt) {
+    return res.status(400).json({ error: 'No refund request on file' });
+  }
+  if (!order.returnClosedAt) {
+    return res.status(400).json({ error: 'Case is not closed' });
+  }
+  // Reopen the case: set returnClosedAt to null, status to 'in_review', and log event
+  const now = new Date().toISOString();
+  db.prepare('UPDATE orders SET returnClosedAt=NULL, returnAdminStatus=? WHERE id=?')
+    .run('in_review', order.id);
+  db.prepare('INSERT INTO order_events(id,orderId,status,at) VALUES(?,?,?,?)')
+    .run(uuidv4(), order.id, 'refund-reopen', now);
+  audit('order', order.id, 'refund-reopen', { returnClosedAt: order.returnClosedAt }, { returnClosedAt: null, returnAdminStatus: 'in_review' });
+  res.json({ orderId: order.id, reopened: true, at: now });
+});
 // --- PayMongo route ---
 const paymongoRoute = require('./src/routes/paymongo');
 app.set('trust proxy', true);
@@ -2202,7 +2243,7 @@ app.get('/api/my-orders', (req, res) => {
   }
   const email = session.user.email.trim().toLowerCase();
   if (!email) return res.status(401).json({ error: 'Sign-in required' });
-  const rows = db.prepare('SELECT id,status,createdAt,paidAt,fulfilledAt,shippedAt,cancelledAt,completedAt,returnRequestedAt,returnReason,returnAdminStatus,returnAdminRespondedAt,returnClosedAt,subtotalCents,discountCents,totalCents,shippingCents,shippingDiscountCents,discountCode,shippingCode FROM orders WHERE LOWER(customerEmail)=LOWER(?) ORDER BY createdAt DESC LIMIT 200').all(email);
+  const rows = db.prepare('SELECT id,status,createdAt,paidAt,fulfilledAt,shippedAt,cancelledAt,completedAt,returnRequestedAt,returnReason,returnAdminStatus,returnAdminRespondedAt,returnClosedAt,subtotalCents,discountCents,totalCents,shippingCents,shippingDiscountCents,discountCode,shippingCode,estimatedDeliveryAt FROM orders WHERE LOWER(customerEmail)=LOWER(?) ORDER BY createdAt DESC LIMIT 200').all(email);
   const itemsStmt = db.prepare('SELECT productId, variantId, titleSnapshot, quantity, unitPriceCents FROM order_items WHERE orderId=?');
   const orders = rows.map(r => {
     const items = itemsStmt.all(r.id);

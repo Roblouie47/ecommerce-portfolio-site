@@ -1,3 +1,14 @@
+/**
+ * Customer reopens a refund case
+ * @param {string} orderId - Order ID
+ * @returns {Promise<Object>}
+ */
+export async function customerReopenRefundCase(orderId) {
+    return apiFetch(`/api/orders/${orderId}/refund-reopen`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    });
+}
 import { state, getRefundThreadStore, ensureAnalyticsState, persistCart } from '../state/index.js';
 import { clearAdminAuth } from '../auth/admin.js';
 import { notify } from '../utils/helpers.js';

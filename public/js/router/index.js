@@ -18,6 +18,13 @@ const routes = {
 // Lazy load page renderers
 async function getRenderer(route) {
     switch (route) {
+                case 'product-reviews': {
+                    // Fallback: show a modal or notification since no product-reviews page exists
+                    return async function showProductReviewsFallback() {
+                        const { notify } = await import('../utils/helpers.js');
+                        notify('The review hub is not implemented yet.', 'info');
+                    };
+                }
         case 'home': {
             const { renderHome } = await import('../pages/home.js');
             return renderHome;

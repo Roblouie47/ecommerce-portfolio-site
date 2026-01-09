@@ -387,6 +387,7 @@ select {
   align-items: center;
   justify-content: center;
   gap: .35rem;
+  cursor: pointer;
   transition: background .2s ease, border-color .2s ease, color .2s ease, transform .2s ease, box-shadow .2s ease;
 }
 
@@ -426,6 +427,7 @@ select {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  cursor: pointer;
   transition: background .2s ease, border-color .2s ease, color .2s ease, transform .2s ease, box-shadow .2s ease;
 }
 
@@ -880,7 +882,7 @@ select {
   flex: 1;
   border: none;
   border-radius: 999px;
-  background: #090909;
+  background: #11203f;
   color: #fff;
   font-size: .85rem;
   font-weight: 600;
@@ -3736,6 +3738,7 @@ git push origin main --force
 
 .field textarea {
   min-height: 90px;
+  margin-bottom: 20px;
 }
 
 .field input:focus,

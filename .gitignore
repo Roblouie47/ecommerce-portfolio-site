@@ -1,8 +1,11 @@
+
+# Minimal .gitignore for public portfolio
 node_modules/
-npm-debug.log
-server.log
-server.err
+*.log
+logs/
 .env
-.env.example
 .DS_Store
+Thumbs.db
+.vscode/
+.idea/
 paymongo.js
