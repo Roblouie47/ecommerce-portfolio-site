@@ -338,13 +338,6 @@ export function showCheckoutModal() {
             }
             
             const breakdownBox = el('div', { class: 'checkout-breakdown', attrs: { id: 'checkout-breakdown' } });
-            const shippingProgress = el('div', { class: 'checkout-shipping-progress hidden' },
-                el('div', { class: 'checkout-progress-track' },
-                    el('div', { class: 'checkout-progress-fill' })
-                ),
-                el('p', { class: 'checkout-progress-label' }, '')
-            );
-            
             const totalQuantity = cartLines.reduce((sum, line) => sum + line.quantity, 0);
             const deliveryWindowLabel = '2-4 days';
             const deliveryWindowDetail = 'Priority handling';
@@ -367,15 +360,12 @@ export function showCheckoutModal() {
             const summaryCard = el('div', { class: 'checkout-summary-card' },
                 el('div', { class: 'checkout-summary-head' },
                     el('p', { class: 'checkout-eyebrow' }, 'Order overview'),
-                    el('h2', { class: 'checkout-title' }, 'Ready to ship'),
-                    el('p', { class: 'checkout-copy muted' }, 'Review every style, perk, and estimate before placing the order.')
+                    el('h2', { class: 'checkout-title' }, 'Ready to ship')
                 ),
                 summaryPills,
                 lineup,
                 breakdownBox,
-                shippingProgress,
                 el('div', { class: 'checkout-security' },
-                    el('span', {}, '256-bit secure checkout'),
                     el('span', {}, 'Free 30-day returns')
                 ),
                 el('div', { class: 'checkout-summary-footer' },
@@ -386,8 +376,8 @@ export function showCheckoutModal() {
             
             const discountApplyBtn = el('button', { class: 'btn discount-apply-btn', attrs: { type: 'button', 'data-apply-kind': 'item' } }, 'Apply');
             const shippingApplyBtn = el('button', { class: 'btn discount-apply-btn', attrs: { type: 'button', 'data-apply-kind': 'ship' } }, 'Apply');
-            const discountInput = el('input', { attrs: { type: 'text', id: 'discount-code', placeholder: 'e.g. THANKYOU', autocomplete: 'off' } });
-            const shippingInput = el('input', { attrs: { type: 'text', id: 'shipping-code', placeholder: 'e.g. SHIPFREE', autocomplete: 'off' } });
+            const discountInput = el('input', { attrs: { type: 'text', id: 'discount-code', autocomplete: 'off' } });
+            const shippingInput = el('input', { attrs: { type: 'text', id: 'shipping-code', autocomplete: 'off' } });
             
             const discountField = el('div', { class: 'field code-field' },
                 el('label', { attrs: { for: 'discount-code' } }, 'Discount Code (items)'),
@@ -441,7 +431,6 @@ export function showCheckoutModal() {
             
             const addressSection = el('div', { class: 'form-section full-span' },
                 el('div', { class: 'form-section-head' },
-                    el('p', { class: 'form-section-eyebrow' }, 'Delivery details'),
                     el('h4', { class: 'form-section-title' }, 'Where should we send it?')
                 ),
                 addressField,
@@ -527,7 +516,6 @@ export function showCheckoutModal() {
             const formCard = el('div', { class: 'checkout-form-card' },
                 el('div', { class: 'checkout-form-head' },
                     el('p', { class: 'checkout-eyebrow' }, 'Delivery details'),
-                    el('h3', { class: 'checkout-form-title' }, 'Where should we send it?'),
                     el('p', { class: 'muted' }, 'We encrypt every submission and never store payment information in-browser.')
                 ),
                 form
@@ -557,9 +545,6 @@ export function showCheckoutModal() {
             }
             renderBreakdown();
             
-            const progressFill = shippingProgress.querySelector('.checkout-progress-fill');
-            const progressLabel = shippingProgress.querySelector('.checkout-progress-label');
-            
             function recalcShipping() {
                 const cEl = /** @type {HTMLSelectElement} */ (form.querySelector('#cust-country'));
                 const country = cEl ? cEl.value : 'OTHER';
@@ -582,20 +567,6 @@ export function showCheckoutModal() {
                 });
                 
                 renderBreakdown();
-                
-                const zone = classifyCountry(country);
-                if (zone === 'DOM') {
-                    const threshold = SHIP_RATES.domesticFreeThreshold;
-                    const progress = Math.min(1, estSubtotal / threshold);
-                    shippingProgress.classList.remove('hidden');
-                    if (progressFill) /** @type {HTMLElement} */ (progressFill).style.width = (progress * 100) + '%';
-                    if (progressLabel) {
-                        const remaining = threshold - estSubtotal;
-                        progressLabel.textContent = remaining > 0 ? 'Spend ' + money(remaining) + ' more to unlock free domestic shipping' : 'Free domestic shipping unlocked';
-                    }
-                } else {
-                    shippingProgress.classList.add('hidden');
-                }
             }
             recalcShipping();
             
