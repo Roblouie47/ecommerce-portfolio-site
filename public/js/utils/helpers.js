@@ -72,22 +72,73 @@ export function showSpinner(show) {
  * @param {string} [type='info'] - Type: 'success', 'error', 'warn', 'info'
  * @param {number} [duration=3000] - Duration in milliseconds
  */
-export function notify(message, type = 'info', duration = 3000) {
-    const existing = document.querySelector('.toast-notification');
-    if (existing) existing.remove();
-    
-    const toast = el('div', { class: `toast-notification toast-${type}` }, message);
-    document.body.appendChild(toast);
-    
-    // Trigger animation
-    requestAnimationFrame(() => {
-        toast.classList.add('show');
+export function notify(message, type = 'info', timeout = 3000, options = {}) {
+    const safeMessage = typeof message === 'string' ? message : String(message ?? '');
+    const normalizedType = ['success', 'error', 'warn', 'info'].includes(type) ? type : 'info';
+    let root = document.getElementById('toast-root');
+    if (!root || !document.body.contains(root)) {
+        root = document.createElement('div');
+        root.id = 'toast-root';
+        document.body.appendChild(root);
+    }
+    root.classList.remove('hidden');
+    root.style.position = 'fixed';
+    root.style.bottom = '1rem';
+    root.style.right = '1rem';
+    root.style.display = 'flex';
+    root.style.flexDirection = 'column-reverse';
+    root.style.gap = '.5rem';
+    root.style.zIndex = '999';
+
+    const box = el('div', {
+        class: `alert alert-${normalizedType}`,
+        attrs: {
+            role: normalizedType === 'error' || normalizedType === 'warn' ? 'alert' : 'status',
+            'aria-live': normalizedType === 'error' || normalizedType === 'warn' ? 'assertive' : 'polite'
+        }
     });
-    
-    setTimeout(() => {
-        toast.classList.remove('show');
-        setTimeout(() => toast.remove(), 300);
-    }, duration);
+    const msgSpan = el('span', {}, safeMessage);
+    box.appendChild(msgSpan);
+
+    if (options.actionText && typeof options.onAction === 'function') {
+        const actionBtn = el('button', { class: 'alert-action', attrs: { type: 'button' } }, options.actionText);
+        actionBtn.addEventListener('click', (evt) => {
+            evt.stopPropagation();
+            try { options.onAction(); } catch { }
+            fade();
+        });
+        box.appendChild(actionBtn);
+    }
+
+    box.style.cursor = 'pointer';
+    root.appendChild(box);
+
+    const max = 4;
+    while (root.children.length > max) {
+        const first = root.firstElementChild;
+        if (first) first.classList.add('fade-out');
+        setTimeout(() => first?.remove(), 300);
+    }
+
+    let remaining = Number.isFinite(timeout) ? timeout : 3000;
+    let start = Date.now();
+    let timer = setTimeout(fade, remaining);
+
+    function fade() {
+        if (box.classList.contains('fade-out')) return;
+        box.classList.add('fade-out');
+        setTimeout(() => box.remove(), 300);
+    }
+
+    box.addEventListener('mouseenter', () => {
+        clearTimeout(timer);
+        remaining -= (Date.now() - start);
+    });
+    box.addEventListener('mouseleave', () => {
+        start = Date.now();
+        timer = setTimeout(fade, Math.max(300, remaining));
+    });
+    box.addEventListener('click', fade);
 }
 
 /**

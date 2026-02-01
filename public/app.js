@@ -918,6 +918,7 @@
         let mode = initialMode === 'register' ? 'register' : 'login';
         let submitting = false;
         showModal((close) => {
+            const layer = el('div', { class: 'modal-stack-layer' });
             const wrap = el('div', { class: 'modal auth-dialog', attrs: { role: 'dialog', 'aria-modal': 'true' } });
             const closeBtn = el('button', { class: 'modal-close', attrs: { type: 'button' } }, '×');
             wrap.appendChild(closeBtn);
@@ -929,7 +930,8 @@
             const formSlot = el('div', { class: 'auth-form-slot' });
             const status = el('div', { class: 'auth-status tiny muted', attrs: { role: 'status' } });
             wrap.append(heading, tabBar, formSlot, status);
-            modalRoot.appendChild(wrap);
+            layer.appendChild(wrap);
+            modalRoot.appendChild(layer);
             closeBtn.addEventListener('click', close);
 
             tabBar.addEventListener('click', (evt) => {
@@ -1248,6 +1250,7 @@
                 termsHighlight.querySelectorAll('a[data-legal]').forEach(link => {
                     link.addEventListener('click', (evt) => {
                         evt.preventDefault();
+                        evt.stopPropagation(); // Prevent bubbling to parent handlers
                         const type = link.getAttribute('data-legal');
                         showLegalModal(type === 'terms' ? 'terms' : 'privacy');
                     });
@@ -1315,7 +1318,7 @@
                         return;
                     }
                     if (!verificationId) {
-                        status.textContent = 'Request a verification code for your email before creating an account.';
+                        // status.textContent = 'Request a verification code for your email before creating an account.';
                         status.classList.add('error');
                         return;
                     }
@@ -4421,21 +4424,7 @@
             return wrap;
         };
 
-        const isStacked = !modalRoot.classList.contains('hidden') && modalRoot.querySelector('.modal');
-
-        if (!isStacked) {
-            toggleLegalBackdrop(true);
-            showModal((close) => {
-                const wrap = buildLegal(() => {
-                    close();
-                    toggleLegalBackdrop(false);
-                });
-                modalRoot.appendChild(wrap);
-            });
-            return;
-        }
-
-        // Layer on top of the existing modal without dismissing it.
+        // Always layer on top of the existing modal without dismissing it.
         toggleLegalBackdrop(true);
         const layer = el('div', { class: 'modal-stack-layer' });
         const closeStacked = () => {

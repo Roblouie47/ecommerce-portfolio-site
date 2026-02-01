@@ -485,7 +485,6 @@ export function showCustomerAuthModal(initialMode = 'login') {
             updateResendLabel();
 
             const passwordInput = /** @type {HTMLInputElement} */ (el('input', { attrs: { id: 'reg-pass', type: 'password', autocomplete: 'new-password', required: 'true', minlength: '8', placeholder: 'Minimum 8 characters' } }));
-            const passwordToggle = /** @type {HTMLButtonElement} */ (el('button', { class: 'password-toggle', attrs: { type: 'button', 'aria-label': 'Show password' } }, '👁'));
             const passwordHints = el('ul', { class: 'password-hints' },
                 el('li', { attrs: { 'data-rule': 'length' } }, 'Minimum of 8 characters'),
                 el('li', { attrs: { 'data-rule': 'uppercase' } }, 'At least one uppercase letter'),
@@ -496,7 +495,7 @@ export function showCustomerAuthModal(initialMode = 'login') {
                 el('label', { attrs: { for: 'reg-pass' } }, 'Password*'),
                 el('div', { class: 'input-inline' },
                     passwordInput,
-                    passwordToggle
+                    
                 ),
                 passwordHints
             );
@@ -604,13 +603,6 @@ export function showCustomerAuthModal(initialMode = 'login') {
                 termsField,
                 submitBtn
             );
-
-            passwordToggle.addEventListener('click', () => {
-                const showing = passwordInput.getAttribute('type') === 'text';
-                passwordInput.setAttribute('type', showing ? 'password' : 'text');
-                passwordToggle.textContent = showing ? '👁' : '🙈';
-                passwordToggle.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
-            });
 
             function updatePasswordHints(value) {
                 const rules = {

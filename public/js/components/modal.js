@@ -5,32 +5,47 @@ import { getModalRoot } from '../utils/helpers.js';
  * Shows a modal with custom content
  * @param {Function} renderFn - Function that receives close callback and renders content
  */
-export function showModal(renderFn) {
+export function showModal(renderFn, { stack = false } = {}) {
     const modalRoot = getModalRoot();
     if (!modalRoot) return;
-    
-    // Clear any existing modal
-    modalRoot.innerHTML = '';
+    // Only stack if requested (legal modal), otherwise main modals (like signup) are not stacked
     modalRoot.classList.remove('hidden');
     document.body.classList.add('modal-open');
-    
+
     const close = () => {
-        modalRoot.innerHTML = '';
-        modalRoot.classList.add('hidden');
-        document.body.classList.remove('modal-open');
+        if (!stack) {
+            // Only clear modalRoot if there are no stacked modals present
+            const hasStacked = modalRoot.querySelector('.modal-stack-layer');
+            if (!hasStacked) {
+                modalRoot.innerHTML = '';
+                modalRoot.classList.add('hidden');
+                document.body.classList.remove('modal-open');
+            }
+        } else {
+            // Remove only the topmost stacked modal
+            const layers = modalRoot.querySelectorAll('.modal-stack-layer');
+            if (layers.length) {
+                layers[layers.length - 1].remove();
+                if (!modalRoot.querySelector('.modal, .modal-stack-layer')) {
+                    modalRoot.classList.add('hidden');
+                    document.body.classList.remove('modal-open');
+                }
+            }
+        }
     };
-    
-    // Create backdrop
-    const backdrop = el('div', { class: 'modal-backdrop' });
-    backdrop.addEventListener('click', (e) => {
-        if (e.target === backdrop) close();
-    });
-    
-    modalRoot.appendChild(backdrop);
-    
+
+    // Create backdrop only for the first (non-stacked) modal
+    if (!stack && !modalRoot.querySelector('.modal-backdrop')) {
+        const backdrop = el('div', { class: 'modal-backdrop' });
+        backdrop.addEventListener('click', (e) => {
+            if (e.target === backdrop) close();
+        });
+        modalRoot.appendChild(backdrop);
+    }
+
     // Render custom content
     renderFn(close);
-    
+
     // ESC key to close
     const escHandler = (e) => {
         if (e.key === 'Escape') {
@@ -108,32 +123,18 @@ export function showLegalModal(kind = 'privacy') {
         return wrap;
     };
 
-    const isStacked = !modalRoot.classList.contains('hidden') && modalRoot.querySelector('.modal');
-
-    if (!isStacked) {
-        toggleLegalBackdrop(true);
-        showModal((close) => {
-            const wrap = buildLegal(() => {
-                close();
-                toggleLegalBackdrop(false);
-            });
-            modalRoot.appendChild(wrap);
-        });
-        return;
-    }
-
-    // Layer on top of the existing modal without dismissing it.
-    toggleLegalBackdrop(true);
+    // Always layer on top of the existing modal without dismissing it.
+    toggleLegalBackdrop(true); // Add .modal-legal-strong for stronger blur/dark
     const layer = el('div', { class: 'modal-stack-layer' });
     const closeStacked = () => {
         layer.remove();
+        // If no more legal modals, remove the strong blur/dark class
+        if (!modalRoot.querySelector('.legal-modal')) {
+            toggleLegalBackdrop(false); // Remove .modal-legal-strong
+        }
         const fallbackFocus = /** @type {HTMLElement} */ (modalRoot.querySelector('.modal'));
         if (fallbackFocus) fallbackFocus.focus?.();
-        if (!modalRoot.querySelector('.legal-modal')) {
-            toggleLegalBackdrop(false);
-        }
     };
-
     const wrap = buildLegal(closeStacked, 'legal-modal-stacked');
     layer.appendChild(wrap);
     modalRoot.appendChild(layer);

@@ -1,3 +1,19 @@
+.legal-modal-simple {
+  position: fixed !important;
+  top: 50% !important;
+  left: 50% !important;
+  transform: translate(-50%, -50%) !important;
+  z-index: 3000 !important;
+  background: #fff;
+  border-radius: 10px;
+  max-width: 420px;
+  width: 92vw;
+  box-shadow: 0 8px 40px 0 rgba(0,0,0,0.25), 0 1.5px 8px 0 rgba(0,0,0,0.10);
+  padding: 2rem 1.5rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
 .pv-recently-viewed {
   border-radius: 36px;
   padding: clamp(1.2rem, 2vw, 2rem);
@@ -3841,7 +3857,7 @@ git push origin main --force
 .upload-label {
   background: rgb(237, 242, 255);
   color: white;
-  border: 2px dashed #0078d4;
+  border: 2px dashed #85b2c4;
   padding: 0.6rem 1rem;
   border-radius: 6px;
   cursor: pointer;
@@ -4325,6 +4341,7 @@ git push origin main --force
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 1.1rem;
+  justify-content: center;
 }
 
 .pv-related-card {
@@ -4336,6 +4353,11 @@ git push origin main --force
   flex-direction: column;
   overflow: hidden;
   transition: transform .2s ease, box-shadow .2s ease;
+}
+
+.pv-related-grid > .pv-related-card:only-child {
+  justify-self: flex-start;
+  width: min(100%, 320px);
 }
 
 .pv-related-card:hover {
@@ -5384,18 +5406,61 @@ git push origin main --force
 /* Alert fade-out */
 .alert {
   opacity: 1;
-  transition: opacity .5s ease, transform .5s ease;
+  transform: translateY(0);
+  transition: opacity .3s ease, transform .3s ease;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: .9rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.alert.toast-show {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .alert.fade-out {
   opacity: 0;
-  transform: translateY(6px);
+  transform: translateY(-6px);
 }
 
 /* Toast container */
+#toast-root {
+  position: fixed;
+  bottom: 1rem;
+  right: 1rem;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: .5rem;
+  z-index: 999;
+}
+
 #toast-root .alert {
-  max-width: 340px;
+  max-width: 360px;
   box-shadow: var(--shadow-2);
+}
+
+#toast-root .alert-action {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: .85rem;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: .85;
+}
+
+#toast-root .alert-action:hover {
+  opacity: 1;
+}
+
+.alert-info {
+  background: #e0f2fe;
+  color: #0c4a6e;
+  border: 1px solid #bae6fd;
 }
 
 /* Spinner overlay */
@@ -8151,8 +8216,8 @@ select:focus-visible {
 .modal-root {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.45);
-  backdrop-filter: blur(3px);
+  background: rgba(15, 23, 42, 0.68); /* darker */
+  backdrop-filter: blur(10px); /* stronger blur */
   display: flex;
   justify-content: center;
   align-items: center;
@@ -8780,7 +8845,7 @@ select:focus-visible {
   inset: 0;
   display: flex;
   justify-content: center;
-  align-items: flex-start;
+  align-items: center; /* center vertically */
   padding: 5vh 1rem 3rem;
   pointer-events: none;
 }
@@ -8788,7 +8853,10 @@ select:focus-visible {
 .modal-stack-layer .modal {
   pointer-events: auto;
   align-content: center;
-  margin-top: 50px;
+  margin-top: 0;
+  box-shadow: 0 8px 40px 0 rgba(0,0,0,0.25), 0 1.5px 8px 0 rgba(0,0,0,0.10);
+  border-radius: 18px;
+  animation: pop-in .25s cubic-bezier(.4,1.6,.6,1);
 }
 
 .legal-modal-stacked {

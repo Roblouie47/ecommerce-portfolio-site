@@ -75,6 +75,9 @@ CREATE TABLE IF NOT EXISTS orders (
   returnClosedAt TEXT,
   stripeSessionId TEXT,
   stripePaymentIntentId TEXT,
+  paymongoIntentId TEXT,
+  paymongoPaymentId TEXT,
+  paymongoClientKey TEXT,
   paymentProvider TEXT,
   createdAt TEXT NOT NULL
 );
@@ -210,6 +213,9 @@ try {
   if (need('returnClosedAt')) db.exec('ALTER TABLE orders ADD COLUMN returnClosedAt TEXT');
   if (need('stripeSessionId')) db.exec('ALTER TABLE orders ADD COLUMN stripeSessionId TEXT');
   if (need('stripePaymentIntentId')) db.exec('ALTER TABLE orders ADD COLUMN stripePaymentIntentId TEXT');
+  if (need('paymongoIntentId')) db.exec('ALTER TABLE orders ADD COLUMN paymongoIntentId TEXT');
+  if (need('paymongoPaymentId')) db.exec('ALTER TABLE orders ADD COLUMN paymongoPaymentId TEXT');
+  if (need('paymongoClientKey')) db.exec('ALTER TABLE orders ADD COLUMN paymongoClientKey TEXT');
   if (need('paymentProvider')) db.exec('ALTER TABLE orders ADD COLUMN paymentProvider TEXT');
 } catch (e) {
   console.warn('Order migration failed', e.message);

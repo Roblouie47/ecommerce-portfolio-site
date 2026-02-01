@@ -1,5 +1,4 @@
 
-# Minimal .gitignore for public portfolio
 node_modules/
 *.log
 logs/
@@ -9,3 +8,5 @@ Thumbs.db
 .vscode/
 .idea/
 paymongo.js
+env.js
+.scripts/

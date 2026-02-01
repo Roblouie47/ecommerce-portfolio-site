@@ -243,28 +243,28 @@ export function showCheckoutModal() {
                 }
                 try {
                     showSpinner(true);
-                    const payloadLines = cartLines.map(line => ({ productId: line.productId, quantity: line.quantity, variantId: line.variantId }));
-                    const orderRes = await createOrder(payloadLines, customer);
-                    state.cart = []; 
-                    saveCart(); 
-                    closeFn(); 
-                    const etaCopy = buildEtaCopy(orderRes.estimatedDeliveryAt, fallbackEtaLabel, fallbackEtaDetail);
-                    state.lastOrder = {
-                        id: orderRes.id,
-                        subtotalCents: orderRes.subtotalCents,
-                        discountCents: orderRes.discountCents,
-                        shippingCents: orderRes.shippingCents,
-                        shippingDiscountCents: orderRes.shippingDiscountCents,
-                        totalCents: orderRes.totalCents,
-                        lines: cartLines,
-                        customer,
-                        etaLabel: etaCopy.label,
-                        etaDetail: etaCopy.detail,
-                        estimatedDeliveryAt: orderRes.estimatedDeliveryAt || null
-                    }; 
-                    navigate('order-confirmation');
+                    const paymongoCart = cartLines.map(line => ({
+                        productId: line.productId,
+                        priceCents: line.unitPriceCents,
+                        qty: line.quantity,
+                        variantId: line.variantId || undefined
+                    }));
+                    const res = await apiFetch('/api/paymongo-intent', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            cart: paymongoCart,
+                            customer,
+                            paymentMethod: 'gcash'
+                        })
+                    });
+                    if (res.next_action && res.next_action.redirect && res.next_action.redirect.url) {
+                        window.location.href = res.next_action.redirect.url;
+                        return;
+                    }
+                    notify('Payment could not be started. Try again.', 'error');
                 } catch (err) { 
-                    notify('Fallback order failed: ' + err.message, 'error', 6000); 
+                    notify('PayMongo error: ' + err.message, 'error', 6000); 
                 } finally { 
                     showSpinner(false); 
                 }
@@ -365,12 +365,11 @@ export function showCheckoutModal() {
                 summaryPills,
                 lineup,
                 breakdownBox,
-                el('div', { class: 'checkout-security' },
-                    el('span', {}, 'Free 30-day returns')
+                el('div', { class: 'checkout-security' }
                 ),
                 el('div', { class: 'checkout-summary-footer' },
                     editCartBtn,
-                    el('span', { class: 'checkout-support-hint' }, 'Need help? support@loomwear.shop')
+                    el('span', { class: 'checkout-support-hint' }, 'Need help? roblouie47@gmail.com')
                 )
             );
             
@@ -700,39 +699,51 @@ export function showCheckoutModal() {
                         window.location.href = res.next_action.redirect.url;
                         return;
                     } else if (res.status === 'succeeded') {
-                        notify('Payment successful!', 'success');
-                        close();
-                        // Optionally, show order confirmation
-                        navigate('order-confirmation');
+                        if (res.orderId) {
+                            try {
+                                const track = await apiFetch(`/api/orders/${res.orderId}/track`);
+                                const order = track?.order;
+                                const items = Array.isArray(track?.items) ? track.items : [];
+                                if (order && order.paidAt) {
+                                    const etaCopy = buildEtaCopy(order.estimatedDeliveryAt, deliveryWindowLabel, deliveryWindowDetail);
+                                    state.lastOrder = {
+                                        id: order.id,
+                                        subtotalCents: order.subtotalCents || 0,
+                                        discountCents: order.discountCents || 0,
+                                        shippingCents: order.shippingCents || 0,
+                                        shippingDiscountCents: order.shippingDiscountCents || 0,
+                                        totalCents: order.totalCents || 0,
+                                        lines: items.map(item => ({
+                                            productId: item.productId,
+                                            variantId: item.variantId || null,
+                                            quantity: item.quantity,
+                                            unitPriceCents: item.unitPriceCents
+                                        })),
+                                        customer,
+                                        etaLabel: etaCopy.label,
+                                        etaDetail: etaCopy.detail,
+                                        estimatedDeliveryAt: order.estimatedDeliveryAt || null
+                                    };
+                                    notify('Payment successful!', 'success');
+                                    close();
+                                    navigate('order-confirmation');
+                                } else {
+                                    notify('Payment processing. Please wait for confirmation.', 'warn');
+                                }
+                            } catch (trackErr) {
+                                notify('Payment received. Order confirmation pending.', 'warn');
+                            }
+                        } else {
+                            notify('Payment successful! Order confirmation pending.', 'success');
+                        }
                         return;
                     } else {
                         notify('Payment could not be started. Try again.', 'error');
                     }
                 } catch (err) {
-                    // Fallback: try manual order creation if PayMongo fails
-                    try {
-                        const orderRes = await createOrder(cartLines, customer, discountCode, shippingCode);
-                        state.cart = [];
-                        saveCart();
-                        close();
-                        const etaCopy = buildEtaCopy(orderRes.estimatedDeliveryAt, deliveryWindowLabel, deliveryWindowDetail);
-                        state.lastOrder = {
-                            id: orderRes.id,
-                            subtotalCents: orderRes.subtotalCents,
-                            discountCents: orderRes.discountCents,
-                            shippingCents: orderRes.shippingCents,
-                            shippingDiscountCents: orderRes.shippingDiscountCents,
-                            totalCents: orderRes.totalCents,
-                            lines: cartLines,
-                            customer,
-                            etaLabel: etaCopy.label,
-                            etaDetail: etaCopy.detail,
-                            estimatedDeliveryAt: orderRes.estimatedDeliveryAt || null
-                        };
-                        navigate('order-confirmation');
-                    } catch (retryErr) {
-                        notify('Checkout failed: ' + retryErr.message, 'error', 6000);
-                    }
+                    // Do not create a manual order when PayMongo fails
+                    const message = err?.message ? `PayMongo error: ${err.message}` : 'PayMongo error: payment could not be started.';
+                    notify(message, 'error', 6000);
                 } finally {
                     showSpinner(false);
                 }

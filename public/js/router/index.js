@@ -12,19 +12,18 @@ const routes = {
     'my-orders': { render: null },
     'order-confirmation': { render: null },
     admin: { render: null },
-    'admin-login': { render: null }
+    'admin-login': { render: null },
+    'product-reviews': { render: null }
 };
 
 // Lazy load page renderers
 async function getRenderer(route) {
     switch (route) {
-                case 'product-reviews': {
-                    // Fallback: show a modal or notification since no product-reviews page exists
-                    return async function showProductReviewsFallback() {
-                        const { notify } = await import('../utils/helpers.js');
-                        notify('The review hub is not implemented yet.', 'info');
-                    };
-                }
+        case 'product-reviews': {
+            // Ensure the import path and export are correct
+            const mod = await import('../pages/product-reviews.js');
+            return mod.renderProductReviews;
+        }
         case 'home': {
             const { renderHome } = await import('../pages/home.js');
             return renderHome;

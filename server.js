@@ -156,9 +156,8 @@ app.post('/api/orders/:id/refund-reopen', (req, res) => {
   res.json({ orderId: order.id, reopened: true, at: now });
 });
 // --- PayMongo route ---
-const paymongoRoute = require('./src/routes/paymongo');
+const createPaymongoRouter = require('./src/routes/paymongo');
 app.set('trust proxy', true);
-app.use('/api', paymongoRoute);
 // Disable default ETag so dynamic API responses (discount lookups) don't 304 and break client discount fetch logic
 app.set('etag', false);
 app.use(cors());
@@ -838,6 +837,16 @@ const metrics = {
 };
 const rateBucket = new Map(); // key=> {count, reset}
 const RATE_LIMIT = { windowMs: 60_000, max: 120, writeMax: 40 }; // per IP per minute
+
+app.use('/api', createPaymongoRouter({
+  db,
+  uuid,
+  uuidv4,
+  baseShippingFor,
+  audit,
+  metrics,
+  getCustomerSession
+}));
 
 function rateLimit(req, res, next) {
   const ip = req.ip || req.connection.remoteAddress || 'unknown';
@@ -1678,7 +1687,11 @@ app.post('/api/checkout/stripe/session', async (req, res) => {
 
 // ---------- Order Endpoints ----------
 app.post('/api/orders', (req, res) => {
-  let { cartId, customer, discountCode, shippingCode, items: directItems } = req.body;
+  if (process.env.REQUIRE_PAYMENT === '1' || process.env.REQUIRE_PAYMENT === 'true') {
+    return res.status(403).json({ error: 'Manual orders disabled. Please complete payment first.' });
+  }
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  let { cartId, customer, discountCode, shippingCode, items: directItems } = body;
   // Normalize codes early for consistent lookups (DB codes stored uppercased)
   if (discountCode && typeof discountCode === 'string') discountCode = discountCode.trim().toUpperCase(); else discountCode = undefined;
   if (shippingCode && typeof shippingCode === 'string') shippingCode = shippingCode.trim().toUpperCase(); else shippingCode = undefined;
@@ -2129,7 +2142,7 @@ app.post('/api/orders/:id/refund-response', requireAdmin, (req, res) => {
     notes: safeNotes || null,
     respondedAt: now,
     usageNotes: safeUsage || null,
-    closedAt,
+    closedAt: wantsClose ? closedAt : (order.returnClosedAt || null),
     message: postedMessage
   });
 });
