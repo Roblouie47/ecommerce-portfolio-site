@@ -4896,16 +4896,158 @@ git push origin main --force
 }
 
 .review-form {
-  margin-top: 1.5rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 1rem;
-  background: #fff;
-  box-shadow: 0 8px 18px -12px rgba(15, 23, 42, .4);
+  margin-top: 0;
+  border: 1px solid rgba(15, 23, 42, .08);
+  border-radius: 18px;
+  padding: 1.25rem 1.4rem 1.6rem;
+  background: linear-gradient(145deg, #f8fafc 0%, #ffffff 70%);
+  box-shadow: 0 18px 36px -20px rgba(15, 23, 42, .45);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
 }
 
-.review-form .form-actions {
-  margin-top: .5rem;
+.review-form-title {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.review-form-meta,
+.review-form-intro {
+  margin: -.35rem 0 .5rem;
+  color: #475569;
+}
+
+.review-form .field {
+  display: flex;
+  flex-direction: column;
+  gap: .4rem;
+}
+
+.review-form .field label {
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: #475569;
+}
+
+.review-form .field input,
+.review-form .field textarea {
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, .65);
+  padding: .8rem .95rem;
+  font-size: .9rem;
+  color: #0f172a;
+  background: #fff;
+  transition: border-color .2s ease, box-shadow .2s ease;
+}
+
+.review-form .field textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.review-form .field input:focus,
+.review-form .field textarea:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, .14);
+  outline: none;
+}
+
+.rating-field {
+  padding: .75rem .9rem 1rem;
+  gap: .5rem;
+}
+
+.rating-field label {
+  margin-bottom: 0;
+}
+
+.rating-star-options {
+  display: inline-flex;
+  gap: .4rem;
+  align-items: center;
+}
+
+.rating-star-btn {
+  border: none;
+  background: rgba(255, 255, 255, .9);
+  border-radius: 14px;
+  padding: .25rem;
+  width: 46px;
+  height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.55rem;
+  color: #cbd5f5;
+  cursor: pointer;
+  transition: transform .18s ease, color .18s ease, box-shadow .18s ease;
+  box-shadow: 0 6px 16px -12px rgba(37, 99, 235, .6);
+}
+
+.rating-star-btn .rating-star-icon {
+  display: inline-block;
+  color: inherit;
+}
+
+.rating-star-btn[data-active="true"] {
+  color: #f59e0b;
+  box-shadow: 0 12px 26px -12px rgba(245, 158, 11, .6);
+}
+
+.rating-star-btn:hover,
+.rating-star-btn:focus-visible {
+  transform: translateY(-1px) scale(1.05);
+  color: #f97316;
+}
+
+.rating-star-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(249, 115, 22, .35);
+}
+
+.rating-caption {
+  font-size: .78rem;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.review-submit-btn {
+  align-self: flex-start;
+  margin-top: .4rem;
+  border-radius: 999px;
+  padding: .8rem 1.6rem;
+  font-size: .92rem;
+  font-weight: 700;
+  background: #131f39;
+  border: none;
+  color: #fff;
+  box-shadow: 0 22px 40px -18px rgba(37, 99, 235, .6);
+}
+
+.review-submit-btn:hover {
+  transform: translateY(-1px);
+}
+
+.review-form-status {
+  margin-top: .8rem;
+  min-height: 1.1rem;
+}
+
+.review-form-status.status-info {
+  color: #475569;
+}
+
+.review-form-status.status-success {
+  color: #15803d;
+}
+
+.review-form-status.status-error {
+  color: #b91c1c;
 }
 
 /* Cart */
@@ -5898,7 +6040,7 @@ body[data-route="favorites"] #app-root {
 
 .btn-fav-buy {
   flex: 1;
-  background: #193067;
+  background: #11203f;
   border: none;
   border-radius: 999px;
   color: #fff;
@@ -5912,7 +6054,7 @@ body[data-route="favorites"] #app-root {
 
 .btn-fav-buy:hover {
   transform: translateY(-2px);
-  background: #142554;
+  background: #141f38;
   box-shadow: 0 20px 36px -18px rgba(20, 37, 84, .6);
 }
 
@@ -8262,123 +8404,111 @@ select:focus-visible {
     border-radius: 18px;
     padding: 1.25rem 1.1rem 1.65rem;
   }
+
+  .review-modal {
+    padding: 1.35rem 1.2rem 1.6rem;
+    gap: 1rem;
+  }
+
+  .review-modal-hero {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: .75rem;
+  }
+
+  .review-modal-thumb {
+    width: 60px;
+    height: 60px;
+  }
 }
 
+
 .review-modal {
-  width: min(520px, 95vw);
-  padding: 1.6rem 1.6rem 1.9rem;
+  width: min(540px, 95vw);
+  padding: 1.8rem 1.8rem 2rem;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 1.2rem;
+  background:white;
+  border: 1px solid rgba(99, 102, 241, .08);
 }
 
 .review-modal-header {
   display: flex;
   flex-direction: column;
-  gap: .35rem;
-  margin-bottom: .15rem;
+  gap: .4rem;
+  margin-bottom: -.2rem;
 }
 
 .review-modal-eyebrow {
   font-size: .72rem;
-  letter-spacing: .08em;
+  letter-spacing: .12em;
   text-transform: uppercase;
-  color: #64748b;
+  color: #7f80a2;
+  font-weight: 700;
 }
 
 .review-modal-title {
-  font-size: 1.35rem;
-  font-weight: 700;
+  font-size: 1.45rem;
+  font-weight: 800;
   color: #0f172a;
+  margin: 0;
 }
 
-.review-modal-price {
-  font-weight: 600;
-  color: #1f2937;
-}
-
-.review-modal-copy {
-  margin-top: -.35rem;
-  margin-bottom: .35rem;
-}
-
-.review-modal-form .field {
+.review-modal-hero {
   display: flex;
-  flex-direction: column;
-  gap: .35rem;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.1rem;
+  border-radius: 18px;
+  background: #e8effa;
+  border: 1px solid rgba(99, 102, 241, .16);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .6);
 }
 
-.review-modal-form .field label {
-  font-size: .78rem;
-  font-weight: 600;
-  color: #0f172a;
+.review-modal-thumb {
+  width: 70px;
+  height: 70px;
+  border-radius: 18px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, .9);
+  box-shadow: 0 16px 30px -20px rgba(15, 23, 42, .55);
 }
 
-.review-modal-form .field input,
-.review-modal-form .field select,
-.review-modal-form .field textarea {
-  border-radius: 12px;
-  border: 1px solid #d1d5db;
-  padding: .7rem .85rem;
-  font-size: .85rem;
-  color: #0f172a;
-  background: #fff;
-  transition: border-color .2s ease, box-shadow .2s ease;
+.review-modal-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
-.rating-field {
+.review-modal-thumb-fallback {
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: #1d4ed8;
+}
+
+.review-modal-product {
   display: flex;
   flex-direction: column;
   gap: .45rem;
 }
 
-.rating-star-options {
-  display: inline-flex;
-  gap: .2rem;
-  align-items: center;
+.review-modal-order {
+  margin: 0;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: #002f95;
 }
 
-.rating-star-btn {
-  border: none;
-  background: transparent;
-  padding: .2rem;
-  font-size: 1.5rem;
-  line-height: 1;
-  color: #cbd5f5;
-  cursor: pointer;
-  transition: color .18s ease, transform .18s ease;
-}
-
-.rating-star-btn .rating-star-icon {
-  display: inline-block;
-  color: inherit;
-  text-shadow: 0 4px 12px rgba(15, 23, 42, .08);
-}
-
-.rating-star-btn[data-active="true"] {
-  color: #f59e0b;
-}
-
-.rating-star-btn[data-active="true"] .rating-star-icon {
-  text-shadow: 0 8px 20px rgba(245, 158, 11, .35);
-}
-
-.rating-star-btn:hover .rating-star-icon,
-.rating-star-btn:focus-visible .rating-star-icon {
-  color: #f97316;
-}
-
-.rating-star-btn:focus-visible {
-  outline: none;
-  transform: translateY(-1px);
-  box-shadow: 0 0 0 3px rgba(248, 113, 22, .25);
-  border-radius: 8px;
-}
-
-.rating-caption {
-  font-size: .75rem;
-  font-weight: 600;
-  color: #6b7280;
+.review-modal-copy {
+  margin: 0;
+  font-size: .92rem;
+  line-height: 1.5;
+  color: #1e293b;
 }
 
 .review-modal-form .field textarea {

@@ -432,6 +432,7 @@ const insertReviewStmt = db.prepare(`INSERT INTO reviews (id, productId, userId,
 const updateReviewStatusStmt = db.prepare('UPDATE reviews SET status = @status, moderatedAt = @moderatedAt, moderatedBy = @moderatedBy, moderationNotes = @moderationNotes, updatedAt = @updatedAt WHERE id = @id');
 const selectOrderForReviewStmt = db.prepare('SELECT id, status, customerEmail, paymentProvider, paidAt FROM orders WHERE id = ?');
 const selectOrderItemsForReviewStmt = db.prepare('SELECT productId, variantId, quantity FROM order_items WHERE orderId = ? AND productId = ?');
+const selectOrderReviewStatusesStmt = db.prepare('SELECT productId, status FROM reviews WHERE orderId = ?');
 const insertRefundMessageStmt = db.prepare('INSERT INTO refund_messages (id, orderId, authorRole, authorName, authorEmail, body, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)');
 const selectRefundMessagesStmt = db.prepare('SELECT id, orderId, authorRole, authorName, authorEmail, body, createdAt FROM refund_messages WHERE orderId=? ORDER BY createdAt ASC');
 
@@ -2259,8 +2260,26 @@ app.get('/api/my-orders', (req, res) => {
   const rows = db.prepare('SELECT id,status,createdAt,paidAt,fulfilledAt,shippedAt,cancelledAt,completedAt,returnRequestedAt,returnReason,returnAdminStatus,returnAdminRespondedAt,returnClosedAt,subtotalCents,discountCents,totalCents,shippingCents,shippingDiscountCents,discountCode,shippingCode,estimatedDeliveryAt FROM orders WHERE LOWER(customerEmail)=LOWER(?) ORDER BY createdAt DESC LIMIT 200').all(email);
   const itemsStmt = db.prepare('SELECT productId, variantId, titleSnapshot, quantity, unitPriceCents FROM order_items WHERE orderId=?');
   const orders = rows.map(r => {
-    const items = itemsStmt.all(r.id);
-    return { ...r, items, itemCount: items.reduce((sum, item) => sum + item.quantity, 0) };
+    const reviewRows = selectOrderReviewStatusesStmt.all(r.id);
+    const reviewStatusByProduct = new Map();
+    for (const review of reviewRows) {
+      if (!review || review.productId == null) continue;
+      reviewStatusByProduct.set(String(review.productId), review.status || null);
+    }
+
+    const items = itemsStmt.all(r.id).map(item => {
+      if (!item) return item;
+      const productKey = item.productId != null ? String(item.productId) : null;
+      const reviewStatus = productKey ? reviewStatusByProduct.get(productKey) ?? 'pending' : null;
+      return {
+        ...item,
+        reviewSubmitted: productKey ? reviewStatusByProduct.has(productKey) : false,
+        reviewStatus
+      };
+    });
+
+    const itemCount = items.reduce((sum, item) => sum + (item?.quantity || 0), 0);
+    return { ...r, items, itemCount };
   });
   res.json({ orders });
 });

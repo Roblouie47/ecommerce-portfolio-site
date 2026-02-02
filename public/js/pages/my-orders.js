@@ -206,8 +206,15 @@ export function renderMyOrders() {
             unitPriceCents: item.unitPriceCents || 0,
             image,
             productId: item.productId || null,
-            variantId: item.variantId || null
+            variantId: item.variantId || null,
+            reviewSubmitted: Boolean(item.reviewSubmitted),
+            reviewStatus: item.reviewStatus || null
         };
+    }
+
+    function orderHasReviewableItems(order) {
+        if (!order || !Array.isArray(order.items)) return false;
+        return order.items.some(item => item && item.productId && !item.reviewSubmitted);
     }
 
     function shouldShowRefundSection(order) {
@@ -385,94 +392,23 @@ export function renderMyOrders() {
             el('span', { class: 'mo-order-total' }, money(order.totalCents || 0))
         );
 
+        const canReview = order.completedAt && orderHasReviewableItems(order);
         const actions = el('div', { class: 'mo-order-actions' },
             !order.paidAt && !order.cancelledAt ? el('button', { class: 'mo-button mo-button--primary mo-button--compact', attrs: { 'data-pay': order.id } }, 'Pay now') : null,
             order.shippedAt && !order.completedAt ? el('button', { class: 'mo-button mo-button--subtle mo-button--compact', attrs: { 'data-track': order.id } }, 'Track order') : null,
             order.shippedAt && !order.returnRequestedAt && !order.cancelledAt ? el('button', { class: 'mo-button mo-button--ghost mo-button--compact', attrs: { 'data-return': order.id } }, 'Return / Refund') : null,
             el('button', { class: 'mo-button mo-button--ghost mo-button--compact', attrs: { 'data-toggle-detail': order.id, 'aria-expanded': 'false' } }, 'View details'),
-            // Add review button for delivered orders
-             order.completedAt && Array.isArray(order.items) ?
-        el('button', {
-            class: 'mo-button mo-button--ghost mo-button--compact mo-review-btn',
-            attrs: {
-                type: 'button',
-                'data-order-id': order.id
-            }
-        }, 'Write Review')
-        : null
-);
-
-
-    function handleReviewButtonClick(e) {
-    const btn = e.target.closest('.mo-review-btn');
-    if (!btn) return;
-    const orderId = btn.getAttribute('data-order-id');
-    const order = deriveMyOrders().find(o => String(o.id) === String(orderId));
-    if (!order) return;
-    const items = (order.items || []).map(enrichItem).filter(Boolean);
-
-    // If only one item, open review directly
-    if (items.length === 1) {
-        openReviewModal(items[0]);
-        return;
-    }
-
-    // If multiple items, show selection modal
-    import('../components/reviews.js').then(({ createReviewForm }) => {
-        const modalRoot = document.getElementById('modal-root');
-        showModal(close => {
-            const wrap = el('div', { class: 'modal review-select-modal' });
-            wrap.appendChild(el('button', { class: 'modal-close', attrs: { type: 'button' } }, '×'));
-            wrap.appendChild(el('h2', {}, 'Select a product to review'));
-            const list = el('div', { class: 'review-product-list' },
-                ...items.map(item => {
-                    const btn = el('button', {
-                        class: 'mo-button mo-button--ghost mo-button--compact',
-                        attrs: { type: 'button' }
-                    }, item.title);
-                    btn.addEventListener('click', () => {
-                        close();
-                        openReviewModal(item);
-                    });
-                    return btn;
-                })
-            );
-            wrap.appendChild(list);
-            modalRoot.appendChild(wrap);
-            wrap.querySelector('.modal-close').addEventListener('click', close);
-        });
-    });
-
-    function openReviewModal(item) {
-        import('../components/reviews.js').then(({ createReviewForm }) => {
-            const modalRoot = document.getElementById('modal-root');
-            showModal(close => {
-                const wrap = el('div', { class: 'modal review-modal' });
-                wrap.appendChild(el('button', { class: 'modal-close', attrs: { type: 'button' } }, '×'));
-                wrap.appendChild(el('h2', {}, `Review: ${item.title}`));
-                const form = createReviewForm(item, {
-                    onSubmit: async (reviewData) => {
-            try {
-                await apiFetch(`/api/products/${item.productId}/reviews`, {
-                method: 'POST',
-                body: JSON.stringify(reviewData),
-                headers: { 'Content-Type': 'application/json' }
-            });
-                notify('Review submitted!', 'success');
-                close();
-                } catch (err) {
-                notify('Failed to submit review', 'error');
-            }
-        }
-                });
-                wrap.appendChild(form);
-                modalRoot.appendChild(wrap);
-                wrap.querySelector('.modal-close').addEventListener('click', close);
-            });
-        });
-    }
-}
-
+            // Add review button when eligible
+            canReview
+                ? el('button', {
+                    class: 'mo-button mo-button--ghost mo-button--compact mo-review-btn',
+                    attrs: {
+                        type: 'button',
+                        'data-order-id': order.id
+                    }
+                }, 'Write Review')
+                : null
+        );
         const detailSections = [];
         const refundSection = buildRefundDetailSection(order);
         if (refundSection) detailSections.push(refundSection);
@@ -548,34 +484,199 @@ export function renderMyOrders() {
 
     // Handler to open review modal (must be in scope for renderOrders)
     function handleReviewButtonClick(e) {
-        const btn = e.target.closest('[data-review-product]');
-        if (!btn) return;
-        const productId = btn.getAttribute('data-review-product');
-        const orderId = btn.getAttribute('data-order-id');
-        const product = state.products?.find(p => String(p.id) === String(productId));
-        if (!product) {
-            notify('Product not found for review.', 'error');
+        const trigger = e.target.closest('.mo-review-btn');
+        if (!trigger) return;
+        const orderId = trigger.getAttribute('data-order-id');
+        const context = getOrderReviewContext(orderId);
+        if (!context) {
+            notify('We could not locate that order.', 'error');
             return;
         }
-        // Show review modal
-        import('../components/reviews.js').then(({ createReviewForm }) => {
+        if (!context.items.length) {
+            notify('All items in this order already have reviews.', 'info');
+            return;
+        }
+        if (context.items.length === 1) {
+            openReviewModal(context, context.items[0]);
+        } else {
+            createProductSelectionModal(context);
+        }
+    }
+
+    function getOrderReviewContext(orderId) {
+        if (!orderId) return null;
+        const baseOrder = deriveMyOrders().find(order => String(order?.id) === String(orderId));
+        if (!baseOrder) return null;
+        const order = mergedOrder(baseOrder) || baseOrder;
+        const seen = new Set();
+        const items = (order.items || [])
+            .map(enrichItem)
+            .filter(item => {
+                if (!item || !item.productId) return false;
+                if (item.reviewSubmitted) return false;
+                const key = `${item.productId}:${item.variantId || ''}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+        return {
+            order,
+            items,
+            customerName: order.customerName || state.customer?.name || state.customer?.fullName || '',
+            customerEmail: order.customerEmail || state.customer?.email || ''
+        };
+    }
+
+    function markOrderItemReviewed(orderId, productId, status = 'pending') {
+        if (!orderId || !productId) return;
+        const normalizedOrderId = String(orderId);
+        const normalizedProductId = String(productId);
+
+        const applyToItems = (items = []) => {
+            items.forEach(item => {
+                if (!item) return;
+                if (String(item.productId) !== normalizedProductId) return;
+                item.reviewSubmitted = true;
+                if (status) item.reviewStatus = status;
+                else if (!item.reviewStatus) item.reviewStatus = 'pending';
+            });
+        };
+
+        if (Array.isArray(state.customer?.orders)) {
+            state.customer.orders.forEach(order => {
+                if (!order || String(order.id) !== normalizedOrderId) return;
+                if (Array.isArray(order.items)) applyToItems(order.items);
+            });
+        }
+
+        if (state.myOrdersDetailCache instanceof Map) {
+            for (const key of [normalizedOrderId, orderId]) {
+                if (!state.myOrdersDetailCache.has(key)) continue;
+                const detail = state.myOrdersDetailCache.get(key);
+                if (detail && Array.isArray(detail.items)) applyToItems(detail.items);
+            }
+        }
+    }
+
+    function createProductSelectionModal(context) {
+        const { items } = context;
+        const modalRoot = document.getElementById('modal-root');
+        showModal(close => {
+            const wrap = el('div', { class: 'modal review-select-modal' });
+            wrap.appendChild(el('button', { class: 'modal-close', attrs: { type: 'button' } }, '×'));
+            wrap.appendChild(el('h2', {}, 'Select a product to review'));
+            wrap.appendChild(el('p', { class: 'tiny muted' }, 'Choose an item from this order to continue.'));
+            const list = el('div', { class: 'review-product-list' },
+                ...items.map(item => {
+                    const label = item.title || 'Product';
+                    const button = el('button', {
+                        class: 'mo-button mo-button--ghost mo-button--compact',
+                        attrs: { type: 'button' }
+                    }, label);
+                    button.addEventListener('click', () => {
+                        close();
+                        openReviewModal(context, item);
+                    });
+                    return button;
+                })
+            );
+            wrap.appendChild(list);
+            modalRoot.appendChild(wrap);
+            wrap.querySelector('.modal-close')?.addEventListener('click', close);
+        });
+    }
+
+    async function openReviewModal(context, item) {
+        if (!item) return;
+        const { order, customerName, customerEmail } = context;
+        const product = resolveProductForItem(item);
+        if (!product?.id) {
+            notify('We could not find that product for review.', 'error');
+            return;
+        }
+
+        try {
+            const { createReviewForm } = await import('../components/reviews.js');
             const modalRoot = document.getElementById('modal-root');
             showModal(close => {
                 const wrap = el('div', { class: 'modal review-modal' });
-                wrap.appendChild(el('button', { class: 'modal-close', attrs: { type: 'button' } }, '×'));
-                wrap.appendChild(el('h2', {}, `Review: ${product.title}`));
+                const closeBtn = el('button', { class: 'modal-close', attrs: { type: 'button' } }, '×');
+                wrap.appendChild(closeBtn);
+                const titleCopy = product.title || item.title || 'Review product';
+
+                const header = el('div', { class: 'review-modal-header' },
+                    el('span', { class: 'review-modal-eyebrow' }, 'Verified purchase'),
+                    el('h2', { class: 'review-modal-title' }, `Review: ${titleCopy}`)
+                );
+
+                const thumb = item.image
+                    ? el('img', { class: 'review-modal-thumb-img', attrs: { src: item.image, alt: titleCopy } })
+                    : el('span', { class: 'review-modal-thumb-fallback' }, (titleCopy || '•').trim().charAt(0).toUpperCase() || '•');
+                const hero = el('div', { class: 'review-modal-hero' },
+                    el('div', { class: 'review-modal-thumb' }, thumb),
+                    el('div', { class: 'review-modal-product' },
+                        el('p', { class: 'review-modal-order tiny muted' }, `Order #${String(order.id).slice(0, 12)}`),
+                        el('p', { class: 'review-modal-copy' }, 'Share how this item performed so fellow shoppers can buy with confidence.')
+                    )
+                );
+
+                wrap.appendChild(header);
+                wrap.appendChild(hero);
                 const form = createReviewForm(product, {
-                    onSubmit: (reviewData) => {
-                        // TODO: Submit review via API
-                        notify('Review submitted (demo only)', 'success');
-                        close();
+                    orderId: order.id,
+                    defaultName: customerName || '',
+                    defaultEmail: customerEmail || '',
+                    lockEmail: Boolean(customerEmail),
+                    heading: 'Share your experience',
+                    intro: 'We verify reviews with your order details to keep feedback authentic.',
+                    onSubmit: async (reviewData) => {
+                        const payload = {
+                            orderId: reviewData.orderId || order.id,
+                            rating: reviewData.rating,
+                            title: reviewData.title,
+                            body: reviewData.body,
+                            email: reviewData.authorEmail,
+                            name: reviewData.authorName
+                        };
+                        const response = await apiFetch(`/api/products/${product.id}/reviews`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        const responseStatus = response?.status || 'pending';
+                        return {
+                            message: response?.message || 'Review submitted for moderation.',
+                            tone: 'success',
+                            reset: false,
+                            afterSuccess: () => {
+                                close();
+                                markOrderItemReviewed(order.id, product.id, responseStatus);
+                                renderOrders();
+                                notify('Thanks for sharing your feedback!', 'success');
+                            }
+                        };
                     }
                 });
                 wrap.appendChild(form);
                 modalRoot.appendChild(wrap);
-                wrap.querySelector('.modal-close').addEventListener('click', close);
+                closeBtn.addEventListener('click', close);
             });
-        });
+        } catch (err) {
+            console.error('Failed to open review modal', err);
+            notify('Unable to open the review form right now.', 'error');
+        }
+    }
+
+    function resolveProductForItem(item) {
+        if (!item) return null;
+        const map = state.productsById instanceof Map ? state.productsById : null;
+        const byMap = item.productId && map ? (map.get(item.productId) || map.get(String(item.productId))) : null;
+        if (byMap) return byMap;
+        if (Array.isArray(state.products)) {
+            const fromList = state.products.find(p => String(p.id) === String(item.productId));
+            if (fromList) return fromList;
+        }
+        return item.productId ? { id: item.productId, title: item.title || '' } : null;
     }
 
     function renderOrders() {

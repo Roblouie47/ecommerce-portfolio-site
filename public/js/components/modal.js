@@ -64,6 +64,7 @@ export function showModal(renderFn, { stack = false } = {}) {
 export function showLegalModal(kind = 'privacy') {
     const modalRoot = getModalRoot();
     if (!modalRoot) return;
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     
     const contentMap = {
         privacy: {
@@ -132,8 +133,12 @@ export function showLegalModal(kind = 'privacy') {
         if (!modalRoot.querySelector('.legal-modal')) {
             toggleLegalBackdrop(false); // Remove .modal-legal-strong
         }
-        const fallbackFocus = /** @type {HTMLElement} */ (modalRoot.querySelector('.modal'));
-        if (fallbackFocus) fallbackFocus.focus?.();
+        if (previouslyFocused && typeof previouslyFocused.focus === 'function') {
+            previouslyFocused.focus();
+        } else {
+            const fallbackFocus = modalRoot.querySelector('.modal:not(.legal-modal) button, .modal:not(.legal-modal) [href], .modal:not(.legal-modal) input, .modal:not(.legal-modal) textarea, .modal:not(.legal-modal) select');
+            if (fallbackFocus instanceof HTMLElement && typeof fallbackFocus.focus === 'function') fallbackFocus.focus();
+        }
     };
     const wrap = buildLegal(closeStacked, 'legal-modal-stacked');
     layer.appendChild(wrap);

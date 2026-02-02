@@ -2,7 +2,7 @@ import { state } from '../state/index.js';
 import { apiFetch } from '../api/index.js';
 import { el } from '../utils/dom.js';
 import { notify, getModalRoot } from '../utils/helpers.js';
-import { showModal } from '../components/modal.js';
+import { showModal, showLegalModal } from '../components/modal.js';
 import { navigate } from '../router/index.js';
 import { applyCountrySelection } from '../components/country-select.js';
 
@@ -199,29 +199,6 @@ export async function requestRegistrationCode(email) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
-    });
-}
-
-/**
- * Show legal modal (privacy policy or terms)
- * @param {string} type - 'privacy' or 'terms'
- */
-function showLegalModal(type) {
-    const modalRoot = getModalRoot();
-    showModal((close) => {
-        const title = type === 'terms' ? 'Terms of Use' : 'Privacy Policy';
-        const content = type === 'terms'
-            ? 'By using this service, you agree to our terms and conditions. This is a demo site for portfolio purposes.'
-            : 'We respect your privacy. Your data is stored securely and used only for order fulfillment. This is a demo site for portfolio purposes.';
-        const wrap = el('div', { class: 'modal legal-modal' },
-            el('button', { class: 'modal-close', attrs: { type: 'button' } }, '×'),
-            el('h2', {}, title),
-            el('div', { class: 'legal-content' }, el('p', {}, content)),
-            el('button', { class: 'btn btn-primary', attrs: { type: 'button' } }, 'Close')
-        );
-        modalRoot.appendChild(wrap);
-        wrap.querySelector('.modal-close').addEventListener('click', close);
-        wrap.querySelector('.btn-primary').addEventListener('click', close);
     });
 }
 
