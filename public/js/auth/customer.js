@@ -203,6 +203,46 @@ export async function requestRegistrationCode(email) {
 }
 
 /**
+ * Request password reset verification code
+ * @param {string} email - Email address
+ * @returns {Promise<Object>}
+ */
+export async function requestPasswordResetCode(email) {
+    const payload = { email: (email || '').trim() };
+    return apiFetch('/api/customer/password-reset/send-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+}
+
+/**
+ * Confirm password reset
+ * @param {Object} payload - Reset payload
+ * @returns {Promise<Object>}
+ */
+export async function confirmPasswordReset(payload) {
+    return apiFetch('/api/customer/password-reset/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {})
+    });
+}
+
+/**
+ * Verify password reset code
+ * @param {Object} payload - Verification payload
+ * @returns {Promise<Object>}
+ */
+export async function verifyPasswordResetCode(payload) {
+    return apiFetch('/api/customer/password-reset/verify-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {})
+    });
+}
+
+/**
  * Customer logout request
  * @returns {Promise<Object>}
  */
@@ -266,8 +306,10 @@ export function showCustomerAuthModal(initialMode = 'login') {
             submitting = false;
             if (mode === 'login') {
                 formSlot.appendChild(buildLoginForm());
-            } else {
+            } else if (mode === 'register') {
                 formSlot.appendChild(buildRegisterForm());
+            } else {
+                formSlot.appendChild(buildResetForm());
             }
         }
 
@@ -288,6 +330,13 @@ export function showCustomerAuthModal(initialMode = 'login') {
                 passField,
                 el('button', { class: 'auth-submit', attrs: { type: 'submit' } }, 'Sign In')
             );
+            const resetLink = el('button', { class: 'auth-link-btn', attrs: { type: 'button' } }, 'Forgot password?');
+            resetLink.addEventListener('click', () => {
+                mode = 'reset';
+                heading.textContent = 'Reset Password';
+                tabBar.querySelectorAll('.auth-tab').forEach(tab => tab.classList.toggle('active', tab.getAttribute('data-mode') === 'login'));
+                renderForm();
+            });
             form.addEventListener('submit', async (evt) => {
                 evt.preventDefault();
                 if (submitting) return;
@@ -313,7 +362,268 @@ export function showCustomerAuthModal(initialMode = 'login') {
                     submitting = false;
                 }
             });
-            return el('div', { class: 'auth-login-stack' }, form);
+            return el('div', { class: 'auth-login-stack' }, form, resetLink);
+        }
+
+        function buildResetForm() {
+            const emailInput = /** @type {HTMLInputElement} */ (el('input', { attrs: { id: 'reset-email', type: 'email', autocomplete: 'email', required: 'true', placeholder: 'you@example.com' } }));
+            const codeInput = /** @type {HTMLInputElement} */ (el('input', { attrs: { id: 'reset-code', type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', required: 'true', placeholder: 'Enter reset code' } }));
+            const newPassInput = /** @type {HTMLInputElement} */ (el('input', { attrs: { id: 'reset-password', type: 'password', autocomplete: 'new-password', required: 'true', placeholder: 'New password (min 8 chars)' } }));
+            const confirmInput = /** @type {HTMLInputElement} */ (el('input', { attrs: { id: 'reset-confirm', type: 'password', autocomplete: 'new-password', required: 'true', placeholder: 'Confirm new password' } }));
+
+            const resendBtn = /** @type {HTMLButtonElement} */ (el('button', { class: 'resend-btn', attrs: { type: 'button', 'aria-label': 'Send reset code' } }, '✉'));
+            resendBtn.disabled = true;
+            const resendLabel = el('span', { class: 'resend-label help-text' }, 'Enter your email to receive a reset code.');
+
+            const emailField = el('div', { class: 'field' },
+                el('label', { attrs: { for: 'reset-email' } }, 'Email*'),
+                emailInput
+            );
+            const codeField = el('div', { class: 'field verification-field' },
+                el('label', { attrs: { for: 'reset-code' } }, 'Code*'),
+                el('div', { class: 'input-inline' }, codeInput, resendBtn),
+                resendLabel
+            );
+            const passField = el('div', { class: 'field' },
+                el('label', { attrs: { for: 'reset-password' } }, 'New Password*'),
+                newPassInput
+            );
+            const confirmField = el('div', { class: 'field' },
+                el('label', { attrs: { for: 'reset-confirm' } }, 'Confirm Password*'),
+                confirmInput
+            );
+
+            const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            let resendTimer = null;
+            let resendRemaining = 0;
+            let sendingCode = false;
+            let resetId = '';
+            let codeEmail = '';
+            let codeSent = false;
+            let codeVerified = false;
+
+            function clearResendTimer() {
+                if (resendTimer) {
+                    clearInterval(resendTimer);
+                    resendTimer = null;
+                }
+            }
+
+            function updateResendLabel() {
+                const emailValue = (emailInput.value || '').trim();
+                const validEmail = EMAIL_PATTERN.test(emailValue);
+                const waiting = resendRemaining > 0;
+                const disabled = sendingCode || waiting || !validEmail;
+                resendBtn.disabled = disabled;
+                if (sendingCode) {
+                    resendLabel.textContent = 'Sending reset code…';
+                } else if (!emailValue) {
+                    resendLabel.textContent = 'Enter your email to receive a reset code.';
+                } else if (!validEmail) {
+                    resendLabel.textContent = 'Enter a valid email address.';
+                } else if (waiting) {
+                    resendLabel.textContent = `Resend code in ${resendRemaining}s`;
+                } else if (!codeSent) {
+                    resendLabel.textContent = 'Send a reset code to continue.';
+                } else {
+                    resendLabel.textContent = 'Need a new code? You can request another now.';
+                }
+                resendBtn.textContent = codeSent ? '↻' : '✉';
+                resendBtn.setAttribute('aria-label', codeSent ? 'Resend reset code' : 'Send reset code');
+            }
+
+            function startResendCountdown(seconds) {
+                clearResendTimer();
+                resendRemaining = Math.max(0, Number(seconds) || 0);
+                updateResendLabel();
+                if (resendRemaining <= 0) return;
+                resendTimer = setInterval(() => {
+                    resendRemaining -= 1;
+                    if (resendRemaining <= 0) {
+                        clearResendTimer();
+                    }
+                    updateResendLabel();
+                }, 1000);
+            }
+
+            function resetResetState() {
+                resetId = '';
+                codeEmail = '';
+                codeSent = false;
+                codeVerified = false;
+                codeInput.value = '';
+                newPassInput.value = '';
+                confirmInput.value = '';
+                resendRemaining = 0;
+                clearResendTimer();
+                updateResendLabel();
+                codeSection.classList.add('hidden');
+                passwordSection.classList.add('hidden');
+            }
+
+            resendBtn.addEventListener('click', async () => {
+                if (sendingCode) return;
+                const emailValue = (emailInput.value || '').trim();
+                if (!EMAIL_PATTERN.test(emailValue)) {
+                    status.textContent = 'Enter a valid email before requesting a code.';
+                    status.classList.add('error');
+                    updateResendLabel();
+                    return;
+                }
+                sendingCode = true;
+                status.classList.remove('error');
+                status.textContent = 'Sending reset code…';
+                updateResendLabel();
+                try {
+                    const res = await requestPasswordResetCode(emailValue);
+                    const currentNormalized = (emailInput.value || '').trim().toLowerCase();
+                    const requestedLower = emailValue.toLowerCase();
+                    if (currentNormalized && currentNormalized !== requestedLower) {
+                        resetResetState();
+                        status.textContent = 'Email updated. Request a new reset code.';
+                        status.classList.add('error');
+                        return;
+                    }
+                    resetId = (res?.resetId || '').trim();
+                    codeEmail = requestedLower;
+                    codeSent = true;
+                    status.textContent = `Reset code sent to ${emailValue}.`;
+                    const cooldown = typeof res?.retryAfter === 'number' ? res.retryAfter : 45;
+                    startResendCountdown(cooldown);
+                    codeSection.classList.remove('hidden');
+                    codeInput.focus();
+                } catch (err) {
+                    status.textContent = err.message || 'Unable to send reset code.';
+                    status.classList.add('error');
+                    resendRemaining = 0;
+                    clearResendTimer();
+                } finally {
+                    sendingCode = false;
+                    updateResendLabel();
+                }
+            });
+
+            const continueBtn = el('button', { class: 'auth-submit', attrs: { type: 'button' } }, 'Continue');
+            continueBtn.addEventListener('click', () => {
+                resendBtn.click();
+            });
+
+            emailInput.addEventListener('input', () => {
+                if (codeEmail && (emailInput.value || '').trim().toLowerCase() !== codeEmail) {
+                    resetResetState();
+                }
+                updateResendLabel();
+            });
+
+            const verifyBtn = el('button', { class: 'auth-submit', attrs: { type: 'button' } }, 'Verify Code');
+            verifyBtn.addEventListener('click', async () => {
+                if (submitting) return;
+                const emailValue = (emailInput.value || '').trim();
+                const codeValue = (codeInput.value || '').trim();
+                if (!EMAIL_PATTERN.test(emailValue)) {
+                    status.textContent = 'Enter a valid email address.';
+                    status.classList.add('error');
+                    return;
+                }
+                if (!resetId || !codeValue) {
+                    status.textContent = 'Enter the reset code you received.';
+                    status.classList.add('error');
+                    return;
+                }
+                submitting = true;
+                status.classList.remove('error');
+                status.textContent = 'Verifying code…';
+                try {
+                    await verifyPasswordResetCode({ email: emailValue, resetId, resetCode: codeValue });
+                    codeVerified = true;
+                    passwordSection.classList.remove('hidden');
+                    status.textContent = 'Code verified. Set your new password.';
+                    newPassInput.focus();
+                } catch (err) {
+                    codeVerified = false;
+                    passwordSection.classList.add('hidden');
+                    status.textContent = err.message || 'Invalid reset code.';
+                    status.classList.add('error');
+                } finally {
+                    submitting = false;
+                }
+            });
+
+            const emailSection = el('div', { class: 'reset-step reset-step-email' },
+                emailField,
+                continueBtn
+            );
+            const codeSection = el('div', { class: 'reset-step reset-step-code hidden' },
+                codeField,
+                verifyBtn
+            );
+            const passwordSection = el('div', { class: 'reset-step reset-step-password hidden' },
+                passField,
+                confirmField,
+                el('button', { class: 'auth-submit', attrs: { type: 'submit' } }, 'Update Password')
+            );
+            const form = el('form', { class: 'auth-form', attrs: { autocomplete: 'on' } },
+                emailSection,
+                codeSection,
+                passwordSection
+            );
+
+            const backLink = el('button', { class: 'auth-link-btn', attrs: { type: 'button' } }, 'Back to sign in');
+            backLink.addEventListener('click', () => {
+                mode = 'login';
+                heading.textContent = 'Welcome Back';
+                tabBar.querySelectorAll('.auth-tab').forEach(tab => tab.classList.toggle('active', tab.getAttribute('data-mode') === 'login'));
+                renderForm();
+            });
+
+            form.addEventListener('submit', async (evt) => {
+                evt.preventDefault();
+                if (submitting) return;
+                const emailValue = (emailInput.value || '').trim();
+                const codeValue = (codeInput.value || '').trim();
+                const newPassword = newPassInput.value || '';
+                const confirmPassword = confirmInput.value || '';
+                if (!EMAIL_PATTERN.test(emailValue)) {
+                    status.textContent = 'Enter a valid email address.';
+                    status.classList.add('error');
+                    return;
+                }
+                if (!codeVerified) {
+                    status.textContent = 'Verify your reset code first.';
+                    status.classList.add('error');
+                    return;
+                }
+                if (newPassword.length < 8) {
+                    status.textContent = 'Password must be at least 8 characters.';
+                    status.classList.add('error');
+                    return;
+                }
+                if (newPassword !== confirmPassword) {
+                    status.textContent = 'Passwords do not match.';
+                    status.classList.add('error');
+                    return;
+                }
+                submitting = true;
+                status.classList.remove('error');
+                status.textContent = 'Updating password…';
+                try {
+                    await confirmPasswordReset({ email: emailValue, password: newPassword, resetId, resetCode: codeValue });
+                    status.textContent = 'Password updated. You can sign in now.';
+                    status.classList.remove('error');
+                    mode = 'login';
+                    heading.textContent = 'Welcome Back';
+                    tabBar.querySelectorAll('.auth-tab').forEach(tab => tab.classList.toggle('active', tab.getAttribute('data-mode') === 'login'));
+                    renderForm();
+                } catch (err) {
+                    status.textContent = err.message || 'Unable to reset password.';
+                    status.classList.add('error');
+                } finally {
+                    submitting = false;
+                }
+            });
+
+            updateResendLabel();
+            return el('div', { class: 'auth-reset-stack' }, form, backLink);
         }
 
         function buildRegisterForm() {

@@ -1,11 +1,10 @@
-import { el, setBodyRoute } from '../utils/dom.js';
+import { el } from '../utils/dom.js';
 import { state } from '../state/index.js';
 import { productPlaceholder, getRootEl, notify, renderStarRating } from '../utils/helpers.js';
 import { money } from '../utils/currency.js';
 import { navigate } from '../router/index.js';
-import { addToCart, createFavoriteButton, isFavorite } from '../components/index.js';
-import { renderProductReviews, createReviewForm } from '../components/reviews.js';
-import { submitReview } from '../api/index.js';
+import { addToCart } from '../components/index.js';
+import { fetchProductReviews } from '../api/index.js';
 
 /**
  * Shows the product detail view
@@ -289,11 +288,32 @@ export function showProductDetail(id, _retryCount = 0) {
         viewSections.push(rvWrap);
         rvWrap.addEventListener('click', e => { const c = (e.target && (/** @type {Element} */(e.target)).closest('[data-rv-id]')); if (c) showProductDetail(c.getAttribute('data-rv-id')); });
     }
-    const reviewSummary = prod.reviewSummary || { count: 0, average: null, totalQuantity: 0 };
-    const previewReviewCount = reviewSummary.count || 0;
-    const summarySnippet = (() => {
-        const safe = reviewSummary;
-        const count = previewReviewCount;
+    const initialSummary = prod.reviewSummary || { count: 0, average: null, totalQuantity: 0 };
+    let currentSummary = initialSummary;
+
+    const getTeaserCopy = (count) => count
+        ? 'See how the drop wears, fits, and ages from verified buyers.'
+        : 'Be the first to leave a fit check for the community.';
+
+    const getSentimentLabel = (summary) => {
+        const count = summary?.count || 0;
+        if (!count) return 'New drop';
+        const avg = summary?.average ?? 0;
+        if (avg >= 4.6) return 'Glowing';
+        if (avg >= 4) return 'Warm';
+        if (avg >= 3.4) return 'Balanced';
+        return 'Mixed';
+    };
+
+    const statCard = (label, value, detail) => el('div', { class: 'prp-stat-card' },
+        el('span', { class: 'prp-stat-label tiny muted' }, label),
+        el('span', { class: 'prp-stat-value' }, value),
+        detail ? el('span', { class: 'prp-stat-detail tiny muted' }, detail) : null
+    );
+
+    const buildSummaryCard = (summary) => {
+        const safe = summary || { count: 0, average: null, totalQuantity: 0 };
+        const count = safe.count || 0;
         const wrap = el('div', { class: 'review-summary-preview flex flex-col gap-sm' });
         wrap.appendChild(el('div', { class: 'review-summary-main flex gap-sm align-center' },
             renderStarRating(safe.average ?? null, count || null, { size: 'lg' }),
@@ -306,55 +326,137 @@ export function showProductDetail(id, _retryCount = 0) {
             ? `Verified units purchased: ${safe.totalQuantity || 0}`
             : 'Awaiting the first verified take.'));
         return wrap;
-    })();
-    summarySnippet.classList.add('prp-score-card');
+    };
 
-    const teaserCopy = previewReviewCount
-        ? 'See how the drop wears, fits, and ages from verified buyers.'
-        : 'Be the first to leave a fit check for the community.';
+    const buildStatsGrid = (summary) => {
+        const safe = summary || { count: 0, totalQuantity: 0 };
+        const count = safe.count || 0;
+        return el('div', { class: 'prp-stats-grid' },
+            statCard('Verified stories', count ? `${count}` : 'Soon', count ? 'Published reviews' : 'Collecting impressions'),
+            statCard('Units loved', safe.totalQuantity ? `${safe.totalQuantity}` : '—', 'Orders tied to reviews'),
+            statCard('Sentiment', getSentimentLabel(safe), count ? 'Community mood' : 'Awaiting first notes')
+        );
+    };
 
-    const statCard = (label, value, detail) => el('div', { class: 'prp-stat-card' },
-        el('span', { class: 'prp-stat-label tiny muted' }, label),
-        el('span', { class: 'prp-stat-value' }, value),
-        detail ? el('span', { class: 'prp-stat-detail tiny muted' }, detail) : null
+    const buildStoryCard = (review) => {
+        const safe = review || {};
+        const bodyText = (safe.body || '').trim();
+        const snippet = bodyText.length > 240 ? `${bodyText.slice(0, 240).trimEnd()}…` : bodyText;
+        const dateSource = safe.publishedAt || safe.createdAt || null;
+        const dateLabel = dateSource ? new Date(dateSource).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+        const purchaseMeta = safe.quantityPurchased ? `${safe.quantityPurchased} unit${safe.quantityPurchased === 1 ? '' : 's'} verified` : '';
+        const detailMeta = purchaseMeta ? el('span', { class: 'tiny muted prp-story-meta' }, purchaseMeta) : null;
+        return el('article', { class: 'review-card prp-story-card flex flex-col gap-xs' },
+            el('div', { class: 'prp-story-head flex align-center justify-between gap-sm' },
+                el('div', { class: 'flex align-center gap-xs' },
+                    renderStarRating(safe.rating ?? null, null, { size: 'xs' }),
+                    el('span', { class: 'review-author' }, safe.authorName || 'Verified buyer')
+                ),
+                dateLabel ? el('span', { class: 'tiny muted' }, dateLabel) : null
+            ),
+            safe.title ? el('h4', { class: 'review-title' }, safe.title) : null,
+            snippet ? el('p', { class: 'review-body' }, snippet) : null,
+            detailMeta
+        );
+    };
+
+    let summaryCard = buildSummaryCard(currentSummary);
+    summaryCard.classList.add('prp-score-card');
+
+    const teaserParagraph = el('p', { class: 'prp-copy tiny muted' }, getTeaserCopy(currentSummary.count || 0));
+    const storiesWrap = el('div', { class: 'prp-stories flex flex-col gap-sm' });
+    storiesWrap.appendChild(el('p', { class: 'tiny muted' }, currentSummary.count
+        ? 'Loading community stories…'
+        : 'No community stories yet. Share your first take.'));
+
+    const prpLeft = el('div', { class: 'prp-left flex flex-col gap-sm' },
+        summaryCard,
+        teaserParagraph,
+        storiesWrap
     );
-    const sentimentLabel = (() => {
-        if (!reviewCount) return 'New drop';
-        const avg = reviewSummary.average ?? 0;
-        if (avg >= 4.6) return 'Glowing';
-        if (avg >= 4) return 'Warm';
-        if (avg >= 3.4) return 'Balanced';
-        return 'Mixed';
-    })();
-    const reviewStats = el('div', { class: 'prp-stats-grid' },
-        statCard('Verified stories', previewReviewCount ? `${previewReviewCount}` : 'Soon', previewReviewCount ? 'Published reviews' : 'Collecting impressions'),
-        statCard('Units loved', reviewSummary.totalQuantity ? `${reviewSummary.totalQuantity}` : '—', 'Orders tied to reviews'),
-        statCard('Sentiment', sentimentLabel, previewReviewCount ? 'Community mood' : 'Awaiting first notes')
-    );
+
+    let statsGrid = buildStatsGrid(currentSummary);
+    const ctaTextNode = el('p', { class: 'prp-cta-text' }, currentSummary.count
+        ? 'Dive deeper into detailed fit notes, fabric impressions, and styling inspo.'
+        : 'Set the tone for this drop with the first review.');
+    const ctaButton = el('button', { class: 'btn btn-small btn-outline', attrs: { 'data-route': 'product-reviews', 'data-id': prod.id } }, currentSummary.count ? 'Read full reviews' : 'Open review hub');
+    const ctaCard = el('div', { class: 'prp-cta-card flex flex-col gap-sm' }, ctaTextNode, ctaButton);
+    const prpRight = el('div', { class: 'prp-right flex flex-col gap-md' }, statsGrid, ctaCard);
 
     const reviewTeaser = el('section', { class: 'panel product-reviews-preview mt-lg' },
         el('div', { class: 'prp-head flex flex-col gap-xxs' },
             el('span', { class: 'pv-eyebrow tiny muted' }, 'Community voices'),
             el('h3', { class: 'prp-title' }, 'Reviews & stories')
         ),
-        el('div', { class: 'prp-body' },
-            el('div', { class: 'prp-left flex flex-col gap-sm' },
-                summarySnippet,
-                el('p', { class: 'prp-copy tiny muted' }, teaserCopy)
-            ),
-            el('div', { class: 'prp-right flex flex-col gap-md' },
-                reviewStats,
-                el('div', { class: 'prp-cta-card flex flex-col gap-sm' },
-                    el('p', { class: 'prp-cta-text' }, previewReviewCount
-                        ? 'Dive deeper into detailed fit notes, fabric impressions, and styling inspo.'
-                        : 'Set the tone for this drop with the first review.'),
-                    el('button', { class: 'btn btn-small btn-outline', attrs: { 'data-route': 'product-reviews', 'data-id': prod.id } }, previewReviewCount ? 'Read full reviews' : 'Open review hub')
-                )
-            )
-        )
+        el('div', { class: 'prp-body' }, prpLeft, prpRight)
     );
 
     viewSections.push(reviewTeaser);
+
+    const updateReviewPreview = (summary, reviews) => {
+        const safeSummary = summary || { count: 0, average: null, totalQuantity: 0 };
+        currentSummary = safeSummary;
+
+        const nextSummaryCard = buildSummaryCard(safeSummary);
+        nextSummaryCard.classList.add('prp-score-card');
+        prpLeft.replaceChild(nextSummaryCard, summaryCard);
+        summaryCard = nextSummaryCard;
+
+        const nextStatsGrid = buildStatsGrid(safeSummary);
+        prpRight.replaceChild(nextStatsGrid, statsGrid);
+        statsGrid = nextStatsGrid;
+
+        teaserParagraph.textContent = getTeaserCopy(safeSummary.count || 0);
+        ctaTextNode.textContent = safeSummary.count
+            ? 'Dive deeper into detailed fit notes, fabric impressions, and styling inspo.'
+            : 'Set the tone for this drop with the first review.';
+        ctaButton.textContent = safeSummary.count ? 'Read full reviews' : 'Open review hub';
+
+        storiesWrap.innerHTML = '';
+        const storyList = Array.isArray(reviews) ? reviews : [];
+        if (storyList.length) {
+            storyList.slice(0, 2).forEach((review) => storiesWrap.appendChild(buildStoryCard(review)));
+            if (storyList.length > 2) {
+                const extra = storyList.length - 2;
+                storiesWrap.appendChild(el('p', { class: 'tiny muted' }, `+${extra} more community stor${extra === 1 ? 'y' : 'ies'} in the review hub.`));
+            }
+        } else {
+            storiesWrap.appendChild(el('p', { class: 'tiny muted' }, 'No community stories yet. Share your first take.'));
+        }
+    };
+
+    const persistSummary = (summary) => {
+        if (!summary) return;
+        prod.reviewSummary = summary;
+        state.productsById.set(prod.id, prod);
+        const idx = state.products.findIndex((p) => p.id === prod.id);
+        if (idx >= 0) {
+            state.products[idx] = { ...state.products[idx], reviewSummary: summary };
+        }
+    };
+
+    const hydrateReviewPreview = async () => {
+        try {
+            const data = await fetchProductReviews(prod.id);
+            if (!data) return;
+            state.reviewsByProduct.set(prod.id, data);
+            const summary = data.summary || currentSummary;
+            updateReviewPreview(summary, data.reviews);
+            persistSummary(summary);
+        } catch (err) {
+            storiesWrap.innerHTML = '';
+            storiesWrap.appendChild(el('p', { class: 'alert alert-error tiny' }, 'Community stories are unavailable right now.'));
+            console.warn('[ProductDetail] Failed to load reviews', err);
+        }
+    };
+
+    const cachedReviews = state.reviewsByProduct?.get?.(prod.id);
+    if (cachedReviews) {
+        updateReviewPreview(cachedReviews.summary || currentSummary, cachedReviews.reviews);
+        persistSummary(cachedReviews.summary);
+    } else {
+        hydrateReviewPreview();
+    }
     const shell = el('div', { class: 'product-view-shell container' }, ...viewSections);
     rootEl.appendChild(shell);
 

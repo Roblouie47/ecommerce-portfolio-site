@@ -42,6 +42,15 @@ export async function renderProductReviews(product, container, options = {}) {
             const list = el('div', { class: 'reviews-list' });
             
             for (const review of reviews) {
+                const dateSource = review?.publishedAt || review?.createdAt || null;
+                let dateLabel = '';
+                if (dateSource) {
+                    const parsed = new Date(dateSource);
+                    if (!Number.isNaN(parsed.getTime())) {
+                        dateLabel = parsed.toLocaleDateString();
+                    }
+                }
+
                 const reviewCard = el('article', { class: 'review-card' },
                     el('div', { class: 'review-header' },
                         el('div', { class: 'review-author' },
@@ -53,7 +62,7 @@ export async function renderProductReviews(product, container, options = {}) {
                     review.title ? el('h4', { class: 'review-title' }, review.title) : null,
                     el('p', { class: 'review-body' }, review.body || ''),
                     el('div', { class: 'review-meta tiny muted' },
-                        review.createdAt ? new Date(review.createdAt).toLocaleDateString() : ''
+                        dateLabel
                     )
                 );
                 list.appendChild(reviewCard);
@@ -136,10 +145,10 @@ export function createReviewForm(product, options = {}) {
         ratingCaption
     ));
 
-    const titleInput = el('input', { attrs: { id: 'review-title', type: 'text', maxlength: '160', placeholder: 'Add a short headline (optional)' } });
-    const bodyInput = el('textarea', { attrs: { id: 'review-body', rows: '4', required: 'true', maxlength: '2000', placeholder: 'What did you love? Anything we could improve?' } });
-    const nameInput = el('input', { attrs: { id: 'review-name', type: 'text', required: 'true', autocomplete: 'name' } });
-    const emailInput = el('input', { attrs: { id: 'review-email', type: 'email', required: 'true', autocomplete: 'email' } });
+    const titleInput = /** @type {HTMLInputElement} */ (el('input', { attrs: { id: 'review-title', type: 'text', maxlength: '160', placeholder: 'Add a short headline (optional)' } }));
+    const bodyInput = /** @type {HTMLTextAreaElement} */ (el('textarea', { attrs: { id: 'review-body', rows: '4', required: 'true', maxlength: '2000', placeholder: 'What did you love? Anything we could improve?' } }));
+    const nameInput = /** @type {HTMLInputElement} */ (el('input', { attrs: { id: 'review-name', type: 'text', required: 'true', autocomplete: 'name' } }));
+    const emailInput = /** @type {HTMLInputElement} */ (el('input', { attrs: { id: 'review-email', type: 'email', required: 'true', autocomplete: 'email' } }));
 
     if (defaultName) nameInput.value = defaultName;
     if (defaultEmail) emailInput.value = defaultEmail;
@@ -163,7 +172,7 @@ export function createReviewForm(product, options = {}) {
         emailInput
     ));
 
-    const submitBtn = el('button', { class: 'btn btn-primary review-submit-btn', attrs: { type: 'submit' } }, 'Submit Review');
+    const submitBtn = /** @type {HTMLButtonElement} */ (el('button', { class: 'btn btn-primary review-submit-btn', attrs: { type: 'submit' } }, 'Submit Review'));
     const status = el('p', { class: 'review-form-status tiny muted', attrs: { role: 'status' } }, '');
     form.appendChild(submitBtn);
     form.appendChild(status);

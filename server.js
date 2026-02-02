@@ -18,9 +18,10 @@ const path = require('path');
 const multer = require('multer');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const axios = require('axios');
 const nodemailer = require('nodemailer');
 const { v4: uuid } = require('uuid');
-const { PORT, ADMIN_TOKEN, ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME, STRIPE_SECRET, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE, PUBLIC_URL, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE, EMAIL_FROM, EMAIL_DEV_MODE, EMAIL_DEV_RECIPIENT } = require('./src/config/env');
+const { PORT, ADMIN_TOKEN, ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME, STRIPE_SECRET, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE, PUBLIC_URL, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE, EMAIL_FROM, EMAIL_DEV_MODE, EMAIL_DEV_RECIPIENT, MAILBOXLAYER_API_KEY, MAILBOXLAYER_BASE_URL, MAILBOXLAYER_TIMEOUT_MS, MAILBOXLAYER_STRICT } = require('./src/config/env');
 const { isAdmin, requireAdmin, issueAdminSession } = require('./src/middleware/admin');
 const db = require('./src/db');
 const { parseJSONField, validateProductInput, validateVariant, buildProductRow, computeCartTotals, getReviewSummary, computeProductInventory } = require('./src/utils');
@@ -33,8 +34,15 @@ const EMAIL_VERIFICATION_TTL_MS = 1000 * 60 * 10; // 10 minutes
 const EMAIL_VERIFICATION_RESEND_MS = 1000 * 45; // 45 seconds
 const MAX_VERIFICATION_ATTEMPTS = 5;
 
+const PASSWORD_RESET_CODE_LENGTH = 6;
+const PASSWORD_RESET_TTL_MS = 1000 * 60 * 10; // 10 minutes
+const PASSWORD_RESET_RESEND_MS = 1000 * 45; // 45 seconds
+const MAX_PASSWORD_RESET_ATTEMPTS = 5;
+
 const pendingVerificationCodes = new Map();
 const verificationIndexByEmail = new Map();
+const pendingPasswordResetCodes = new Map();
+const passwordResetIndexByEmail = new Map();
 
 const ADMIN_LOGIN_ATTEMPT_LIMIT = 5;
 const ADMIN_LOGIN_ATTEMPT_WINDOW_MS = 1000 * 60 * 5; // 5 minutes
@@ -172,6 +180,7 @@ const insertUserStmt = db.prepare('INSERT INTO users (id, email, passwordHash, n
 const selectSessionWithUserStmt = db.prepare(`SELECT s.id AS sessionId, s.token, s.createdAt AS sessionCreatedAt, s.expiresAt, u.id AS userId, u.email, u.name, u.role, u.avatarUrl, u.country, u.address FROM sessions s JOIN users u ON u.id = s.userId WHERE s.token = ?`);
 const insertSessionStmt = db.prepare('INSERT INTO sessions (id, userId, token, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)');
 const deleteSessionByTokenStmt = db.prepare('DELETE FROM sessions WHERE token = ?');
+const deleteSessionsByUserStmt = db.prepare('DELETE FROM sessions WHERE userId = ?');
 const deleteExpiredSessionsStmt = db.prepare('DELETE FROM sessions WHERE expiresAt <= ?');
 const updateSessionExpiryStmt = db.prepare('UPDATE sessions SET expiresAt = ? WHERE token = ?');
 
@@ -272,6 +281,40 @@ function hashVerificationCode(code) {
   return crypto.createHash('sha256').update(String(code || '')).digest('hex');
 }
 
+async function validateEmailWithMailboxlayer(email) {
+  if (!MAILBOXLAYER_API_KEY) {
+    return { ok: true, skipped: true };
+  }
+  const baseUrl = MAILBOXLAYER_BASE_URL || 'http://apilayer.net/api/check';
+  const url = `${baseUrl}?access_key=${encodeURIComponent(MAILBOXLAYER_API_KEY)}&email=${encodeURIComponent(email)}&smtp=1&format=1`;
+  try {
+    const response = await axios.get(url, { timeout: MAILBOXLAYER_TIMEOUT_MS });
+    const data = response?.data || {};
+    if (data?.success === false) {
+      const info = data?.error?.info || 'Mailboxlayer validation failed.';
+      return { ok: false, error: info, retryable: true };
+    }
+    const formatValid = data.format_valid !== false;
+    const mxFound = data.mx_found !== false;
+    const smtpCheck = data.smtp_check !== false;
+    const disposable = data.disposable === true;
+    const roleEmail = data.role === true;
+    const strict = MAILBOXLAYER_STRICT !== false;
+    if (strict) {
+      if (!formatValid || !mxFound || !smtpCheck || disposable || roleEmail) {
+        return { ok: false, error: 'Email address could not be verified. Use a real inbox.' };
+      }
+    } else {
+      if (!formatValid || !mxFound || disposable) {
+        return { ok: false, error: 'Email address could not be verified. Use a real inbox.' };
+      }
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: 'Email verification service is unavailable. Try again shortly.', retryable: true };
+  }
+}
+
 async function sendVerificationEmail(recipient, code) {
   const safeCode = String(code || '').trim();
   if (EMAIL_DEV_MODE && EMAIL_DEV_RECIPIENT) {
@@ -290,6 +333,28 @@ async function sendVerificationEmail(recipient, code) {
     subject: 'Your verification code',
     text: `Use this code to verify your email: ${safeCode}\nThis code expires in ${Math.round(EMAIL_VERIFICATION_TTL_MS / 60000)} minutes.`,
     html: `<p>Use the code below to verify your email address.</p><p style="font-size:24px;font-weight:bold;letter-spacing:4px;">${safeCode}</p><p>This code expires in ${Math.round(EMAIL_VERIFICATION_TTL_MS / 60000)} minutes.</p>`
+  };
+  await mailTransport.sendMail(message);
+}
+
+async function sendPasswordResetEmail(recipient, code) {
+  const safeCode = String(code || '').trim();
+  if (EMAIL_DEV_MODE && EMAIL_DEV_RECIPIENT) {
+    recipient = EMAIL_DEV_RECIPIENT;
+  }
+  if (!mailTransport || !EMAIL_SENDER) {
+    if (EMAIL_DEV_MODE) {
+      console.log(`[mail] dev mode password reset code for ${recipient}: ${safeCode}`);
+      return;
+    }
+    throw new Error('Email transport not configured');
+  }
+  const message = {
+    from: EMAIL_SENDER,
+    to: recipient,
+    subject: 'Your password reset code',
+    text: `Use this code to reset your password: ${safeCode}\nThis code expires in ${Math.round(PASSWORD_RESET_TTL_MS / 60000)} minutes.`,
+    html: `<p>Use the code below to reset your password.</p><p style="font-size:24px;font-weight:bold;letter-spacing:4px;">${safeCode}</p><p>This code expires in ${Math.round(PASSWORD_RESET_TTL_MS / 60000)} minutes.</p>`
   };
   await mailTransport.sendMail(message);
 }
@@ -973,6 +1038,12 @@ app.post('/api/customer/register/send-code', async (req, res) => {
     if (existing) {
       return res.status(409).json({ error: 'Email already registered' });
     }
+
+    const mailboxlayerResult = await validateEmailWithMailboxlayer(email);
+    if (!mailboxlayerResult.ok) {
+      const status = mailboxlayerResult.retryable ? 503 : 400;
+      return res.status(status).json({ error: mailboxlayerResult.error || 'Email address could not be verified.' });
+    }
     const now = Date.now();
     const existingId = verificationIndexByEmail.get(email);
     if (existingId) {
@@ -1087,6 +1158,171 @@ app.post('/api/customer/register', async (req, res) => {
   } catch (err) {
     console.error('[customer] register failed', err);
     res.status(500).json({ error: 'Unable to register' });
+  }
+});
+
+app.post('/api/customer/password-reset/send-code', async (req, res) => {
+  try {
+    const transportReady = !!(mailTransport && EMAIL_SENDER && SMTP_HOST);
+    if (!transportReady && !EMAIL_DEV_MODE) {
+      return res.status(503).json({ error: 'Email delivery is not configured' });
+    }
+    const { email: rawEmail } = req.body || {};
+    const email = normalizeEmail(rawEmail);
+    if (!email || !EMAIL_REGEX.test(email)) {
+      return res.status(400).json({ error: 'Enter a valid email address' });
+    }
+
+    const mailboxlayerResult = await validateEmailWithMailboxlayer(email);
+    if (!mailboxlayerResult.ok) {
+      const status = mailboxlayerResult.retryable ? 503 : 400;
+      return res.status(status).json({ error: mailboxlayerResult.error || 'Email address could not be verified.' });
+    }
+
+    const now = Date.now();
+    const existingId = passwordResetIndexByEmail.get(email);
+    if (existingId) {
+      const prior = pendingPasswordResetCodes.get(existingId);
+      if (prior && prior.expiresAt > now) {
+        const elapsed = now - (prior.lastSentAt || 0);
+        if (elapsed < PASSWORD_RESET_RESEND_MS) {
+          const retryAfter = Math.ceil((PASSWORD_RESET_RESEND_MS - elapsed) / 1000);
+          return res.status(429).json({ error: `Please wait ${retryAfter}s before requesting a new code`, retryAfter });
+        }
+      }
+      pendingPasswordResetCodes.delete(existingId);
+    }
+
+    const user = selectUserByEmailStmt.get(email);
+    if (!user) {
+      return res.json({ sent: true, retryAfter: Math.ceil(PASSWORD_RESET_RESEND_MS / 1000) });
+    }
+
+    const codeNumber = crypto.randomInt(0, Math.pow(10, PASSWORD_RESET_CODE_LENGTH));
+    const code = String(codeNumber).padStart(PASSWORD_RESET_CODE_LENGTH, '0');
+    const resetId = uuid();
+    const entry = {
+      email,
+      codeHash: hashVerificationCode(code),
+      expiresAt: now + PASSWORD_RESET_TTL_MS,
+      attempts: 0,
+      lastSentAt: now
+    };
+    pendingPasswordResetCodes.set(resetId, entry);
+    passwordResetIndexByEmail.set(email, resetId);
+
+    try {
+      await sendPasswordResetEmail(email, code);
+    } catch (err) {
+      pendingPasswordResetCodes.delete(resetId);
+      if (passwordResetIndexByEmail.get(email) === resetId) {
+        passwordResetIndexByEmail.delete(email);
+      }
+      console.error('[customer] password reset email failed', err);
+      const reason = err?.message ? `Unable to send reset code: ${err.message}` : 'Unable to send reset code';
+      return res.status(500).json({ error: EMAIL_DEV_MODE ? `${reason} (dev mode: check server logs for the code).` : reason });
+    }
+
+    res.json({
+      sent: true,
+      resetId,
+      expiresIn: Math.ceil(PASSWORD_RESET_TTL_MS / 1000),
+      retryAfter: Math.ceil(PASSWORD_RESET_RESEND_MS / 1000)
+    });
+  } catch (err) {
+    console.error('[customer] password reset send code failed', err);
+    const reason = err?.message ? `Unable to send reset code: ${err.message}` : 'Unable to send reset code';
+    res.status(500).json({ error: reason });
+  }
+});
+
+app.post('/api/customer/password-reset/verify-code', async (req, res) => {
+  try {
+    const { email: rawEmail, resetId: rawResetId, resetCode: rawResetCode } = req.body || {};
+    const email = normalizeEmail(rawEmail);
+    if (!email || !EMAIL_REGEX.test(email)) return res.status(400).json({ error: 'A valid email is required' });
+    const resetId = typeof rawResetId === 'string' ? rawResetId.trim() : '';
+    const resetCode = typeof rawResetCode === 'string' ? rawResetCode.trim() : '';
+    if (!resetId || !resetCode) {
+      return res.status(400).json({ error: 'Reset code is required' });
+    }
+    const entry = pendingPasswordResetCodes.get(resetId);
+    if (!entry || entry.email !== email) {
+      return res.status(400).json({ error: 'Reset code invalid or expired. Request a new code.' });
+    }
+    const nowMs = Date.now();
+    if (entry.expiresAt <= nowMs) {
+      pendingPasswordResetCodes.delete(resetId);
+      if (passwordResetIndexByEmail.get(email) === resetId) passwordResetIndexByEmail.delete(email);
+      return res.status(400).json({ error: 'Reset code expired. Request a new code.' });
+    }
+    const attemptHash = hashVerificationCode(resetCode);
+    if (attemptHash !== entry.codeHash) {
+      entry.attempts = (entry.attempts || 0) + 1;
+      if (entry.attempts >= MAX_PASSWORD_RESET_ATTEMPTS) {
+        pendingPasswordResetCodes.delete(resetId);
+        if (passwordResetIndexByEmail.get(email) === resetId) passwordResetIndexByEmail.delete(email);
+        return res.status(400).json({ error: 'Too many incorrect attempts. Request a new code.' });
+      }
+      return res.status(400).json({ error: 'Incorrect reset code' });
+    }
+    res.json({ valid: true });
+  } catch (err) {
+    console.error('[customer] password reset verify failed', err);
+    res.status(500).json({ error: 'Unable to verify reset code' });
+  }
+});
+
+app.post('/api/customer/password-reset/confirm', async (req, res) => {
+  try {
+    const { email: rawEmail, password, resetId: rawResetId, resetCode: rawResetCode } = req.body || {};
+    const email = normalizeEmail(rawEmail);
+    const passwordValue = typeof password === 'string' ? password : '';
+    if (!email || !EMAIL_REGEX.test(email)) return res.status(400).json({ error: 'A valid email is required' });
+    if (passwordValue.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+
+    const resetId = typeof rawResetId === 'string' ? rawResetId.trim() : '';
+    const resetCode = typeof rawResetCode === 'string' ? rawResetCode.trim() : '';
+    if (!resetId || !resetCode) {
+      return res.status(400).json({ error: 'Reset code is required' });
+    }
+    const entry = pendingPasswordResetCodes.get(resetId);
+    if (!entry || entry.email !== email) {
+      return res.status(400).json({ error: 'Reset code invalid or expired. Request a new code.' });
+    }
+    const nowMs = Date.now();
+    if (entry.expiresAt <= nowMs) {
+      pendingPasswordResetCodes.delete(resetId);
+      if (passwordResetIndexByEmail.get(email) === resetId) passwordResetIndexByEmail.delete(email);
+      return res.status(400).json({ error: 'Reset code expired. Request a new code.' });
+    }
+    const attemptHash = hashVerificationCode(resetCode);
+    if (attemptHash !== entry.codeHash) {
+      entry.attempts = (entry.attempts || 0) + 1;
+      if (entry.attempts >= MAX_PASSWORD_RESET_ATTEMPTS) {
+        pendingPasswordResetCodes.delete(resetId);
+        if (passwordResetIndexByEmail.get(email) === resetId) passwordResetIndexByEmail.delete(email);
+        return res.status(400).json({ error: 'Too many incorrect attempts. Request a new code.' });
+      }
+      return res.status(400).json({ error: 'Incorrect reset code' });
+    }
+
+    const user = selectUserByEmailStmt.get(email);
+    if (!user) {
+      pendingPasswordResetCodes.delete(resetId);
+      if (passwordResetIndexByEmail.get(email) === resetId) passwordResetIndexByEmail.delete(email);
+      return res.status(400).json({ error: 'Account not found' });
+    }
+
+    const passwordHash = await hashPassword(passwordValue);
+    db.prepare('UPDATE users SET passwordHash=? WHERE id=?').run(passwordHash, user.id);
+    deleteSessionsByUserStmt.run(user.id);
+    pendingPasswordResetCodes.delete(resetId);
+    if (passwordResetIndexByEmail.get(email) === resetId) passwordResetIndexByEmail.delete(email);
+    res.json({ reset: true });
+  } catch (err) {
+    console.error('[customer] password reset failed', err);
+    res.status(500).json({ error: 'Unable to reset password' });
   }
 });
 

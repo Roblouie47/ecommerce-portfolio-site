@@ -4543,6 +4543,31 @@ git push origin main --force
   font-weight: 600;
 }
 
+.prp-stories {
+  display: flex;
+  flex-direction: column;
+  gap: .85rem;
+}
+
+.prp-story-card {
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, .25);
+  background: rgba(255, 255, 255, .92);
+  box-shadow: 0 20px 48px -36px rgba(15, 23, 42, .5);
+  padding: .85rem 1rem;
+}
+
+.prp-story-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .6rem;
+}
+
+.prp-story-meta {
+  color: #475569;
+}
+
 .product-reviews-preview .btn {
   border-radius: 999px;
   align-self: flex-start;
@@ -8606,6 +8631,12 @@ select:focus-visible {
   gap: .55rem;
 }
 
+.auth-form .input-inline {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+}
+
 .auth-form.signup-form .field input,
 .auth-form.signup-form .field select {
   border-radius: 14px;
@@ -8666,11 +8697,20 @@ select:focus-visible {
   color: #6b7280;
 }
 
+.resend-btn {
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: .02em;
+  text-shadow: 0 1px 2px rgba(15, 23, 42, .35);
+}
+
 .auth-form.signup-form .resend-btn {
   border: none;
-  background: #0f172a;
+  background: radial-gradient(circle at top, #1e293b, #0f172a 65%);
+  border: 1px solid rgba(148, 163, 184, .35);
   color: #fff;
-  font-size: 1rem;
+  font-size: 1.05rem;
   width: 40px;
   height: 40px;
   border-radius: 50%;
@@ -8678,15 +8718,37 @@ select:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 8px 20px -12px rgba(15, 23, 42, .6);
-  transition: transform .2s ease, box-shadow .2s ease, background .2s ease;
+  box-shadow: 0 10px 24px -14px rgba(15, 23, 42, .7), inset 0 1px 0 rgba(255, 255, 255, .2);
+  transition: transform .2s ease, box-shadow .2s ease, background .2s ease, border-color .2s ease;
+}
+
+.auth-reset-stack .resend-btn {
+  color: white;
+  background: #6b7280;
+  border: 1px solid rgba(148, 163, 184, .4);
+  border-radius: 100px;
+  width: 38px;
+  height: 38px;
+  box-shadow: 0 6px 16px -10px rgba(15, 23, 42, .4);
+}
+
+.auth-reset-stack .resend-btn:not(:disabled):hover {
+  background: #4b5563;
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px -12px rgba(15, 23, 42, .45);
 }
 
 .auth-form.signup-form .resend-btn:disabled {
   background: #1f2937;
-  opacity: .5;
+  border-color: rgba(148, 163, 184, .2);
+  opacity: .6;
   cursor: not-allowed;
   box-shadow: none;
+}
+
+.auth-reset-stack .resend-btn:disabled {
+  background: #1f2937;
+  opacity: .55;
 }
 
 .auth-form.signup-form .resend-btn:not(:disabled):hover {
@@ -8773,6 +8835,10 @@ select:focus-visible {
   flex: 1;
 }
 
+.auth-form .verification-field input {
+  flex: 1;
+}
+
 .auth-form.signup-form .auth-submit {
   margin-top: .6rem;
   font-size: .82rem;
@@ -8844,6 +8910,48 @@ select:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+}
+
+.auth-reset-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.auth-reset-stack .reset-step {
+  display: flex;
+  flex-direction: column;
+  gap: .65rem;
+}
+
+.auth-reset-stack .auth-submit {
+  width: 100%;
+  padding: .7rem 1rem;
+  font-size: .85rem;
+}
+
+.auth-reset-stack .verification-field .input-inline {
+  gap: .5rem;
+}
+
+.auth-reset-stack .resend-label {
+  margin-top: .15rem;
+}
+
+.auth-link-btn {
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  color: #2563eb;
+  font-weight: 600;
+  font-size: .85rem;
+  padding: 0;
+  cursor: pointer;
+}
+
+.auth-link-btn:hover {
+  color: #1d4ed8;
+  text-decoration: underline;
 }
 
 .auth-divider {
