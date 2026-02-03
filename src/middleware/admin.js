@@ -1,5 +1,7 @@
 const crypto = require('crypto');
-const { ADMIN_TOKEN, ADMIN_ALLOWED_IPS } = require('../config/env');
+const { ADMIN_ALLOWED_IPS } = require('../config/env');
+
+const ADMIN_SESSION_COOKIE_NAME = process.env.ADMIN_SESSION_COOKIE_NAME || 'admin_session';
 
 const allowedIps = Array.isArray(ADMIN_ALLOWED_IPS) ? ADMIN_ALLOWED_IPS : [];
 const allowedIpSet = new Set(allowedIps.map(ip => ip.toLowerCase()));
@@ -17,9 +19,26 @@ function pruneExpiredSessions() {
 const cleanupTimer = setInterval(pruneExpiredSessions, 1000 * 60 * 10);
 if (typeof cleanupTimer.unref === 'function') cleanupTimer.unref();
 
+function parseCookieHeader(header) {
+    const result = {};
+    if (!header || typeof header !== 'string') return result;
+    header.split(';').forEach(part => {
+        const idx = part.indexOf('=');
+        if (idx === -1) return;
+        const key = part.slice(0, idx).trim();
+        const val = part.slice(idx + 1).trim();
+        if (!key) return;
+        result[key] = decodeURIComponent(val);
+    });
+    return result;
+}
+
 function extractAdminToken(req) {
     const header = req.header('X-Admin-Token');
-    return typeof header === 'string' ? header.trim() : '';
+    if (typeof header === 'string' && header.trim()) return header.trim();
+    const cookies = parseCookieHeader(req?.headers?.cookie);
+    const cookieToken = cookies[ADMIN_SESSION_COOKIE_NAME];
+    return typeof cookieToken === 'string' ? cookieToken.trim() : '';
 }
 
 function requestMatchesIpAllowList(req) {
@@ -27,20 +46,9 @@ function requestMatchesIpAllowList(req) {
     const candidates = [];
     if (Array.isArray(req.ips) && req.ips.length) candidates.push(...req.ips);
     if (req.ip) candidates.push(req.ip);
-    const forwarded = req.headers['x-forwarded-for'];
-    if (typeof forwarded === 'string' && forwarded.trim()) {
-        forwarded.split(',').forEach(ip => {
-            const trimmed = ip.trim();
-            if (trimmed) candidates.push(trimmed);
-        });
-    }
     return candidates
         .map(ip => ip.toLowerCase())
         .some(ip => allowedIpSet.has(ip));
-}
-
-function hasStaticAdminToken(token) {
-    return !!token && token === ADMIN_TOKEN;
 }
 
 function getAdminSession(token) {
@@ -60,11 +68,6 @@ function getAdminSession(token) {
 function isAdmin(req) {
     const token = extractAdminToken(req);
     if (!token) return false;
-    if (hasStaticAdminToken(token)) {
-        if (!requestMatchesIpAllowList(req)) return false;
-        req.adminSession = req.adminSession || { token: ADMIN_TOKEN, role: 'admin', source: 'static' };
-        return true;
-    }
     const session = getAdminSession(token);
     if (!session) return false;
     if (!requestMatchesIpAllowList(req)) return false;
@@ -75,15 +78,6 @@ function isAdmin(req) {
 function requireAdmin(req, res, next) {
     const token = extractAdminToken(req);
     if (!token) return res.status(401).json({ error: 'Unauthorized' });
-
-    if (hasStaticAdminToken(token)) {
-        if (!requestMatchesIpAllowList(req)) {
-            return res.status(403).json({ error: 'Admin access blocked from this IP' });
-        }
-        req.adminSession = req.adminSession || { token: ADMIN_TOKEN, role: 'admin', source: 'static' };
-        return next();
-    }
-
     const session = getAdminSession(token);
     if (!session) return res.status(401).json({ error: 'Unauthorized' });
     if (!requestMatchesIpAllowList(req)) {
@@ -112,4 +106,9 @@ function issueAdminSession(user = {}, req) {
     return { token, expiresAt: new Date(expiresAt).toISOString() };
 }
 
-module.exports = { isAdmin, requireAdmin, issueAdminSession };
+function revokeAdminSession(token) {
+    if (!token) return false;
+    return adminSessions.delete(token);
+}
+
+module.exports = { isAdmin, requireAdmin, issueAdminSession, revokeAdminSession, ADMIN_SESSION_COOKIE_NAME };

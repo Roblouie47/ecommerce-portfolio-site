@@ -45,6 +45,7 @@ export const state = {
         country: '',
         address: '',
         sessionToken: '',
+        hasSession: false,
         orders: []
     },
     customerRefundThreads: new Map(),
@@ -192,32 +193,28 @@ export function initState() {
         }
     } catch { /* ignore */ }
     
-    // Restore admin token
+    // Restore admin profile
     try {
-        const adminToken = localStorage.getItem('adminToken');
-        const adminUser = localStorage.getItem('adminUser');
-        if (adminToken && adminUser) {
-            state.admin.token = adminToken;
-            state.admin.user = JSON.parse(adminUser);
-        }
+        const adminUser = localStorage.getItem('adminProfile');
+        if (adminUser) state.admin.user = JSON.parse(adminUser);
+        const adminExpires = localStorage.getItem('adminTokenExpiresAt');
+        if (adminExpires) state.admin.expiresAt = adminExpires;
     } catch { /* ignore */ }
     
-    // Restore customer session
+    // Restore customer profile (session token is cookie-based by default)
     try {
-        const customerToken = localStorage.getItem('customerSessionToken');
         const customerProfile = localStorage.getItem('customerProfile');
-        if (customerToken) {
-            state.customer.sessionToken = customerToken;
-            if (customerProfile) {
-                const profile = JSON.parse(customerProfile);
-                state.customer.id = profile.id || '';
-                state.customer.name = profile.name || '';
-                state.customer.email = profile.email || '';
-                state.customer.avatarUrl = profile.avatarUrl || '';
-                state.customer.country = profile.country || '';
-                state.customer.address = sanitizeStoredAddress(profile.address);
-            }
+        if (customerProfile) {
+            const profile = JSON.parse(customerProfile);
+            state.customer.id = profile.id || '';
+            state.customer.name = profile.name || '';
+            state.customer.email = profile.email || '';
+            state.customer.avatarUrl = profile.avatarUrl || '';
+            state.customer.country = profile.country || '';
+            state.customer.address = sanitizeStoredAddress(profile.address);
         }
+        const storedToken = localStorage.getItem('customerSessionToken');
+        if (storedToken) state.customer.sessionToken = storedToken;
     } catch { /* ignore */ }
 
     // Restore preferred shipping/country selection

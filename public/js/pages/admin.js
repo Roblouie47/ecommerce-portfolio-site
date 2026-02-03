@@ -318,7 +318,7 @@ export function renderAdmin() {
     const rootEl = getRootEl();
     if (!rootEl) return;
     
-    if (!state.admin.token || !state.admin.user) {
+    if (!state.admin.user) {
         clearAdminAuth(false);
         navigate('admin-login', {}, { replace: true });
         return;
@@ -345,7 +345,6 @@ export function renderAdmin() {
         el('div', { class: 'panel-header' },
             el('span', {}, 'Admin Panel'),
             el('div', { class: 'inline-fields admin-panel-head' },
-                el('span', { class: 'admin-email tiny muted' }, state.admin.user.email || 'Admin'),
                 el('button', { class: 'btn btn-small btn-outline', attrs: { id: 'admin-panel-signout' } }, 'Sign Out'),
                 el('button', { class: 'btn btn-small', attrs: { id: 'new-product' } }, 'New Product')
             )
@@ -505,7 +504,7 @@ export function renderAdmin() {
                     el('button', { class: 'btn-restore btn-small btn-warning', attrs: { id: 'bulk-restore-btn', style: 'display:none;', disabled: 'true' } }, 'Restore Selected'),
                     el('button', { class: 'btn btn-small btn-danger', attrs: { id: 'bulk-purge-btn', style: 'display:none;', disabled: 'true' } }, 'Delete Permanently')
                 ),
-                el('label', { class: 'flex gap-xs align-center', attrs: { for: 'toggle-show-deleted', style: 'gap:.3rem;cursor:pointer;font-size:.75rem;margin-left:.5rem;' } },
+                el('label', { class: 'flex gap-xs align-center admin-show-deleted-toggle', attrs: { for: 'toggle-show-deleted' } },
                     el('input', { attrs: { type: 'checkbox', id: 'toggle-show-deleted' } }),
                     el('span', {}, 'Show Deleted')
                 )
@@ -2026,7 +2025,6 @@ function refreshDiscountTable() {
             try {
                 const res = await fetch('/api/import/products', {
                     method: 'POST',
-                    headers: state.admin.token ? { 'X-Admin-Token': state.admin.token } : {},
                     body: fd
                 });
                 const data = await res.json();
@@ -2534,7 +2532,7 @@ function buildOrderActions(o, opts = {}) {
 // ============================================
 
 async function refreshAdminData() {
-    if (!state.admin.token) return;
+    if (!state.admin.user) return;
     try {
         await loadProducts(state.admin.showDeleted, { forceFresh: true });
         // Prune deletedBuffer

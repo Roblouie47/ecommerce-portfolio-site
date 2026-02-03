@@ -33,47 +33,6 @@ async function createOrder(cartLines, customer, discountCode, shippingCode) {
 }
 
 /**
- * Starts Stripe checkout
- * @param {Array} cartLines - Cart line items
- * @param {Object} customer - Customer info
- * @param {string} [discountCode] - Optional discount code
- * @param {string} [shippingCode] - Optional shipping code
- */
-async function startStripeCheckout(cartLines, customer, discountCode, shippingCode) {
-    const payload = {
-        items: cartLines.map(line => ({
-            productId: line.productId,
-            quantity: line.quantity,
-            variantId: line.variantId
-        })),
-        customer,
-        discountCode,
-        shippingCode,
-        successUrl: window.location.origin + '/?success=true&session_id={CHECKOUT_SESSION_ID}',
-        cancelUrl: window.location.origin + '/?canceled=true'
-    };
-    
-    const session = await apiFetch('/api/checkout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    });
-    
-    if (session.url) {
-        window.location.href = session.url;
-    } else if (session.sessionId) {
-        const stripe = /** @type {any} */ (window).Stripe?.(session.publishableKey || state.meta?.stripePublishableKey);
-        if (stripe) {
-            await stripe.redirectToCheckout({ sessionId: session.sessionId });
-        } else {
-            throw new Error('Stripe not loaded');
-        }
-    } else {
-        throw new Error('Invalid checkout response');
-    }
-}
-
-/**
  * Helper to set active currency based on country
  * @param {string} code - Currency code
  */
@@ -452,11 +411,17 @@ export function showCheckoutModal() {
                 el('div', { class: 'payment-method-options' },
                     el('label', { class: 'payment-method-label' },
                         el('input', { attrs: { type: 'radio', name: 'payment_method', value: 'gcash', checked: true } }),
-                        ' GCash (e-wallet)'
+                        el('div', { class: 'payment-method-content' },
+                            el('span', { class: 'payment-method-name' }, 'GCash (e-wallet)'),
+                            el('img', { class: 'payment-method-logo', attrs: { src: '/uploads/GCash_logo.svg.png', alt: 'GCash' } })
+                        )
                     ),
                     el('label', { class: 'payment-method-label' },
                         el('input', { attrs: { type: 'radio', name: 'payment_method', value: 'card' } }),
-                        ' Debit/Credit Card'
+                        el('div', { class: 'payment-method-content' },
+                            el('span', { class: 'payment-method-name' }, 'Debit/Credit Card'),
+                            el('img', { class: 'payment-method-logo', attrs: { src: '/uploads/atm.png', alt: 'Debit/Credit Card' } })
+                        )
                     )
                 )
             );
@@ -942,30 +907,29 @@ export function renderOrderConfirmation(orderData) {
 }
 
 /**
- * Handles Stripe return after checkout
- * @returns {Promise<boolean>} - Whether Stripe return was handled
+ * Handles PayMongo return after checkout
+ * @returns {Promise<boolean>} - Whether PayMongo return was handled
  */
-export async function maybeHandleStripeReturn() {
+export async function maybeHandlePayMongoReturn() {
     try {
         const params = new URLSearchParams(window.location.search);
-        const status = params.get('checkout');
-        if (!status) return false;
-        
+        const flag = params.get('paymongo');
         const orderId = params.get('orderId');
+        if (flag !== 'return' || !orderId) return false;
+
         const clearQuery = () => {
             if (window.history && window.history.replaceState) {
                 window.history.replaceState({}, document.title, window.location.pathname);
             }
         };
-        
-        if (status === 'success' && orderId) {
-            showSpinner(true);
-            try {
-                const track = await apiFetch('/api/orders/' + encodeURIComponent(orderId) + '/track');
-                const order = track.order;
-                const items = Array.isArray(track.items) ? track.items : [];
+
+        showSpinner(true);
+        try {
+            const track = await apiFetch('/api/orders/' + encodeURIComponent(orderId) + '/track');
+            const order = track.order;
+            const items = Array.isArray(track.items) ? track.items : [];
+            if (order && order.paidAt) {
                 const etaCopy = buildEtaCopy(order.estimatedDeliveryAt, '2-4 days', 'Priority handling');
-                
                 state.lastOrder = {
                     id: order.id,
                     subtotalCents: order.subtotalCents,
@@ -975,8 +939,7 @@ export async function maybeHandleStripeReturn() {
                     totalCents: order.totalCents,
                     customer: {
                         name: order.customerName || 'Customer',
-                        email: order.customerEmail || '',
-                        phone: order.customerPhone || ''
+                        email: order.customerEmail || ''
                     },
                     lines: items.map(item => ({
                         productId: item.productId,
@@ -989,29 +952,27 @@ export async function maybeHandleStripeReturn() {
                     etaDetail: etaCopy.detail,
                     estimatedDeliveryAt: order.estimatedDeliveryAt || null
                 };
-                
                 state.cart = [];
                 saveCart();
                 clearQuery();
                 navigate('order-confirmation');
                 return true;
-            } catch (err) {
-                notify('Unable to load Stripe order: ' + err.message, 'error', 6000);
-                clearQuery();
-                return false;
-            } finally {
-                showSpinner(false);
             }
-        }
-        
-        if (status === 'cancelled') {
-            notify('Stripe checkout cancelled.', 'info', 4000);
+
+            notify('Payment pending. We will notify you once it is confirmed.', 'info', 6000);
             clearQuery();
+            navigate('my-orders');
+            return true;
+        } catch (err) {
+            notify('Unable to verify PayMongo payment: ' + err.message, 'error', 6000);
+            clearQuery();
+            return false;
+        } finally {
+            showSpinner(false);
         }
-        
-        return false;
     } catch (err) {
-        console.warn('[checkout] stripe return handler failed', err);
+        console.warn('[checkout] paymongo return handler failed', err);
         return false;
     }
 }
+

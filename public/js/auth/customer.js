@@ -40,11 +40,7 @@ export function setCustomerSession(payload) {
         clearCustomerSession(false);
         return;
     }
-    const token = payload.token || state.customer?.sessionToken || '';
-    if (!token) {
-        clearCustomerSession(false);
-        return;
-    }
+    const token = typeof payload.token === 'string' ? payload.token.trim() : '';
     const user = payload.user;
     const normalizedCountry = (user.country || '').toString().trim().toUpperCase();
     const safeAddress = normalizeCustomerAddress(user.address);
@@ -56,10 +52,12 @@ export function setCustomerSession(payload) {
         country: normalizedCountry,
         address: safeAddress,
         sessionToken: token,
+        hasSession: true,
         orders: state.customer?.orders || []
     };
     try {
-        localStorage.setItem('customerSessionToken', token);
+        if (token) localStorage.setItem('customerSessionToken', token);
+        else localStorage.removeItem('customerSessionToken');
         localStorage.setItem('customerProfile', JSON.stringify({
             id: state.customer.id,
             name: state.customer.name,
@@ -92,6 +90,7 @@ export function clearCustomerSession(notifyUser = false) {
         country: '',
         address: '',
         sessionToken: '',
+        hasSession: false,
         orders: []
     };
     try {
@@ -110,19 +109,10 @@ export function clearCustomerSession(notifyUser = false) {
  * @returns {Promise<boolean>}
  */
 export async function verifyCustomerSession() {
-    if (!state.customer?.sessionToken) {
-        mountCustomerHeaderControls();
-        return false;
-    }
     try {
         const data = await apiFetch('/api/customer/session');
         if (data && data.user) {
-            const token = data.token || state.customer.sessionToken;
-            if (!token) {
-                clearCustomerSession(false);
-                return false;
-            }
-            setCustomerSession({ token, user: data.user });
+            setCustomerSession({ user: data.user });
             return true;
         }
     } catch (err) {
@@ -147,10 +137,9 @@ export async function customerLoginRequest(credentials) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
     });
-    if (data?.token && data?.user) {
+    if (data?.user) {
         setCustomerSession({ token: data.token, user: data.user });
-    }
-    if (!(data?.token && data?.user)) {
+    } else {
         throw new Error('Login failed.');
     }
     return data;
@@ -254,10 +243,6 @@ async function customerLogoutRequest() {
  * Customer logout flow
  */
 export async function customerLogoutFlow() {
-    if (!state.customer || !state.customer.sessionToken) {
-        clearCustomerSession(true);
-        return;
-    }
     try {
         await customerLogoutRequest();
     } catch (err) {
@@ -367,9 +352,24 @@ export function showCustomerAuthModal(initialMode = 'login') {
 
         function buildResetForm() {
             const emailInput = /** @type {HTMLInputElement} */ (el('input', { attrs: { id: 'reset-email', type: 'email', autocomplete: 'email', required: 'true', placeholder: 'you@example.com' } }));
-            const codeInput = /** @type {HTMLInputElement} */ (el('input', { attrs: { id: 'reset-code', type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', required: 'true', placeholder: 'Enter reset code' } }));
+            const codeInput = /** @type {HTMLInputElement} */ (el('input', { class: 'otp-hidden', attrs: { id: 'reset-code', type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', placeholder: 'Enter reset code', 'aria-hidden': 'true', tabindex: '-1' } }));
             const newPassInput = /** @type {HTMLInputElement} */ (el('input', { attrs: { id: 'reset-password', type: 'password', autocomplete: 'new-password', required: 'true', placeholder: 'New password (min 8 chars)' } }));
             const confirmInput = /** @type {HTMLInputElement} */ (el('input', { attrs: { id: 'reset-confirm', type: 'password', autocomplete: 'new-password', required: 'true', placeholder: 'Confirm new password' } }));
+
+            const OTP_LENGTH = 6;
+            const otpInputs = Array.from({ length: OTP_LENGTH }, (_, index) => (
+                /** @type {HTMLInputElement} */ (el('input', {
+                    class: 'otp-input',
+                    attrs: {
+                        type: 'text',
+                        inputmode: 'numeric',
+                        pattern: '[0-9]*',
+                        maxlength: '1',
+                        'aria-label': `Digit ${index + 1}`
+                    }
+                }))
+            ));
+            const otpContainer = el('div', { class: 'otp-inputs', attrs: { 'data-otp-length': String(OTP_LENGTH) } }, ...otpInputs);
 
             const resendBtn = /** @type {HTMLButtonElement} */ (el('button', { class: 'resend-btn', attrs: { type: 'button', 'aria-label': 'Send reset code' } }, '✉'));
             resendBtn.disabled = true;
@@ -381,7 +381,8 @@ export function showCustomerAuthModal(initialMode = 'login') {
             );
             const codeField = el('div', { class: 'field verification-field' },
                 el('label', { attrs: { for: 'reset-code' } }, 'Code*'),
-                el('div', { class: 'input-inline' }, codeInput, resendBtn),
+                el('div', { class: 'input-inline' }, otpContainer, resendBtn),
+                codeInput,
                 resendLabel
             );
             const passField = el('div', { class: 'field' },
@@ -401,6 +402,92 @@ export function showCustomerAuthModal(initialMode = 'login') {
             let codeEmail = '';
             let codeSent = false;
             let codeVerified = false;
+
+            function syncOtpValue() {
+                codeInput.value = otpInputs.map((input) => input.value || '').join('');
+            }
+
+            function clearOtpInputs() {
+                otpInputs.forEach((input) => {
+                    input.value = '';
+                });
+                syncOtpValue();
+            }
+
+            async function verifyResetCode() {
+                if (submitting) return;
+                const emailValue = (emailInput.value || '').trim();
+                const codeValue = (codeInput.value || '').trim();
+                if (!EMAIL_PATTERN.test(emailValue)) {
+                    status.textContent = 'Enter a valid email address.';
+                    status.classList.add('error');
+                    return;
+                }
+                if (!resetId || codeValue.length !== OTP_LENGTH) {
+                    status.textContent = 'Enter the reset code you received.';
+                    status.classList.add('error');
+                    return;
+                }
+                submitting = true;
+                status.classList.remove('error');
+                status.textContent = 'Verifying code…';
+                try {
+                    await verifyPasswordResetCode({ email: emailValue, resetId, resetCode: codeValue });
+                    codeVerified = true;
+                    setResetStep('password');
+                    status.textContent = 'Code verified. Set your new password.';
+                    newPassInput.focus();
+                } catch (err) {
+                    codeVerified = false;
+                    setResetStep('code');
+                    status.textContent = err.message || 'Invalid reset code.';
+                    status.classList.add('error');
+                } finally {
+                    submitting = false;
+                }
+            }
+
+            otpInputs.forEach((input, index) => {
+                input.addEventListener('input', () => {
+                    const sanitized = (input.value || '').replace(/\D/g, '');
+                    input.value = sanitized.slice(-1);
+                    if (input.value && index < otpInputs.length - 1) {
+                        otpInputs[index + 1].focus();
+                    }
+                    syncOtpValue();
+                    if (codeInput.value.length === OTP_LENGTH) {
+                        verifyResetCode();
+                    }
+                });
+
+                input.addEventListener('keydown', (evt) => {
+                    if (evt.key === 'Backspace' && !input.value && index > 0) {
+                        otpInputs[index - 1].focus();
+                    }
+                });
+
+                input.addEventListener('paste', (evt) => {
+                    const text = evt.clipboardData?.getData('text') || '';
+                    if (!text) return;
+                    const digits = text.replace(/\D/g, '').slice(0, OTP_LENGTH);
+                    if (!digits) return;
+                    evt.preventDefault();
+                    digits.split('').forEach((digit, idx) => {
+                        if (otpInputs[idx]) {
+                            otpInputs[idx].value = digit;
+                        }
+                    });
+                    for (let idx = digits.length; idx < otpInputs.length; idx += 1) {
+                        otpInputs[idx].value = '';
+                    }
+                    syncOtpValue();
+                    const nextIndex = Math.min(digits.length, otpInputs.length - 1);
+                    otpInputs[nextIndex].focus();
+                    if (codeInput.value.length === OTP_LENGTH) {
+                        verifyResetCode();
+                    }
+                });
+            });
 
             function clearResendTimer() {
                 if (resendTimer) {
@@ -446,19 +533,27 @@ export function showCustomerAuthModal(initialMode = 'login') {
                 }, 1000);
             }
 
+            function setResetStep(step) {
+                const isEmail = step === 'email';
+                const isCode = step === 'code';
+                const isPassword = step === 'password';
+                emailSection.classList.toggle('hidden', !isEmail);
+                codeSection.classList.toggle('hidden', !isCode);
+                passwordSection.classList.toggle('hidden', !isPassword);
+            }
+
             function resetResetState() {
                 resetId = '';
                 codeEmail = '';
                 codeSent = false;
                 codeVerified = false;
-                codeInput.value = '';
+                clearOtpInputs();
                 newPassInput.value = '';
                 confirmInput.value = '';
                 resendRemaining = 0;
                 clearResendTimer();
                 updateResendLabel();
-                codeSection.classList.add('hidden');
-                passwordSection.classList.add('hidden');
+                setResetStep('email');
             }
 
             resendBtn.addEventListener('click', async () => {
@@ -490,13 +585,12 @@ export function showCustomerAuthModal(initialMode = 'login') {
                     status.textContent = `Reset code sent to ${emailValue}.`;
                     const cooldown = typeof res?.retryAfter === 'number' ? res.retryAfter : 45;
                     startResendCountdown(cooldown);
-                    codeSection.classList.remove('hidden');
-                    codeInput.focus();
+                    setResetStep('code');
+                    otpInputs[0]?.focus();
                 } catch (err) {
+                    resetResetState();
                     status.textContent = err.message || 'Unable to send reset code.';
                     status.classList.add('error');
-                    resendRemaining = 0;
-                    clearResendTimer();
                 } finally {
                     sendingCode = false;
                     updateResendLabel();
@@ -515,48 +609,16 @@ export function showCustomerAuthModal(initialMode = 'login') {
                 updateResendLabel();
             });
 
-            const verifyBtn = el('button', { class: 'auth-submit', attrs: { type: 'button' } }, 'Verify Code');
-            verifyBtn.addEventListener('click', async () => {
-                if (submitting) return;
-                const emailValue = (emailInput.value || '').trim();
-                const codeValue = (codeInput.value || '').trim();
-                if (!EMAIL_PATTERN.test(emailValue)) {
-                    status.textContent = 'Enter a valid email address.';
-                    status.classList.add('error');
-                    return;
-                }
-                if (!resetId || !codeValue) {
-                    status.textContent = 'Enter the reset code you received.';
-                    status.classList.add('error');
-                    return;
-                }
-                submitting = true;
-                status.classList.remove('error');
-                status.textContent = 'Verifying code…';
-                try {
-                    await verifyPasswordResetCode({ email: emailValue, resetId, resetCode: codeValue });
-                    codeVerified = true;
-                    passwordSection.classList.remove('hidden');
-                    status.textContent = 'Code verified. Set your new password.';
-                    newPassInput.focus();
-                } catch (err) {
-                    codeVerified = false;
-                    passwordSection.classList.add('hidden');
-                    status.textContent = err.message || 'Invalid reset code.';
-                    status.classList.add('error');
-                } finally {
-                    submitting = false;
-                }
-            });
-
             const emailSection = el('div', { class: 'reset-step reset-step-email' },
                 emailField,
                 continueBtn
             );
             const codeSection = el('div', { class: 'reset-step reset-step-code hidden' },
+                el('img', { class: 'otp-email-hero', attrs: { src: '/uploads/emailAnimation.gif', alt: 'Verification code email' } }),
+                el('p', { class: 'help-text otp-helper-text' }, 'Enter the 6-digit OTP sent to your registered email address.'),
                 codeField,
-                verifyBtn
             );
+            
             const passwordSection = el('div', { class: 'reset-step reset-step-password hidden' },
                 passField,
                 confirmField,
@@ -568,12 +630,29 @@ export function showCustomerAuthModal(initialMode = 'login') {
                 passwordSection
             );
 
-            const backLink = el('button', { class: 'auth-link-btn', attrs: { type: 'button' } }, 'Back to sign in');
+            const backLink = el('button', { class: 'auth-link-btn', attrs: { type: 'button' } }, 'Back');
             backLink.addEventListener('click', () => {
-                mode = 'login';
-                heading.textContent = 'Welcome Back';
-                tabBar.querySelectorAll('.auth-tab').forEach(tab => tab.classList.toggle('active', tab.getAttribute('data-mode') === 'login'));
-                renderForm();
+                const onEmail = !emailSection.classList.contains('hidden');
+                const onCode = !codeSection.classList.contains('hidden');
+                const onPassword = !passwordSection.classList.contains('hidden');
+                if (onPassword) {
+                    setResetStep('code');
+                    status.textContent = '';
+                    status.classList.remove('error');
+                    otpInputs[0]?.focus();
+                    return;
+                }
+                if (onCode) {
+                    setResetStep('email');
+                    status.textContent = '';
+                    status.classList.remove('error');
+                    emailInput.focus();
+                    return;
+                }
+                if (onEmail) {
+                    status.textContent = '';
+                    status.classList.remove('error');
+                }
             });
 
             form.addEventListener('submit', async (evt) => {
@@ -622,22 +701,43 @@ export function showCustomerAuthModal(initialMode = 'login') {
                 }
             });
 
+            setResetStep('email');
             updateResendLabel();
             return el('div', { class: 'auth-reset-stack' }, form, backLink);
         }
 
         function buildRegisterForm() {
-            const codeInput = /** @type {HTMLInputElement} */ (el('input', { attrs: { id: 'reg-code', type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', required: 'true', placeholder: 'Enter verification code' } }));
+            const codeInput = /** @type {HTMLInputElement} */ (el('input', { class: 'otp-hidden', attrs: { id: 'reg-code', type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', placeholder: 'Enter verification code', 'aria-hidden': 'true', tabindex: '-1' } }));
+            const OTP_LENGTH = 6;
+            const otpInputs = Array.from({ length: OTP_LENGTH }, (_, index) => (
+                /** @type {HTMLInputElement} */ (el('input', {
+                    class: 'otp-input',
+                    attrs: {
+                        type: 'text',
+                        inputmode: 'numeric',
+                        pattern: '[0-9]*',
+                        maxlength: '1',
+                        'aria-label': `Digit ${index + 1}`
+                    }
+                }))
+            ));
+            const otpContainer = el('div', { class: 'otp-inputs', attrs: { 'data-otp-length': String(OTP_LENGTH) } }, ...otpInputs);
             const resendBtn = /** @type {HTMLButtonElement} */ (el('button', { class: 'resend-btn', attrs: { type: 'button', 'aria-label': 'Send verification code' } }, '✉'));
             resendBtn.disabled = true;
             const resendLabel = el('span', { class: 'resend-label help-text' }, 'Enter your email to receive a code.');
             const codeField = el('div', { class: 'field verification-field' },
                 el('label', { attrs: { for: 'reg-code' } }, 'Code*'),
                 el('div', { class: 'input-inline' },
-                    codeInput,
+                    otpContainer,
                     resendBtn
                 ),
+                codeInput,
                 resendLabel
+            );
+            const codeSection = el('div', { class: 'signup-step signup-step-code hidden' },
+                el('img', { class: 'otp-email-hero', attrs: { src: '/uploads/emailAnimation.gif', alt: 'Verification code email' } }),
+                el('p', { class: 'help-text otp-helper-text' }, 'Enter the 6-digit OTP sent to your registered email address.'),
+                codeField
             );
             const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
             let resendTimer = null;
@@ -646,6 +746,42 @@ export function showCustomerAuthModal(initialMode = 'login') {
             let verificationId = '';
             let codeEmail = '';
             let codeSent = false;
+            let currentStep = 'form';
+            let lastAutoCode = '';
+            let form = null;
+
+            function setSignupStep(step) {
+                currentStep = step;
+                const onCode = step === 'code';
+                codeSection.classList.toggle('hidden', !onCode);
+                if (formFields) formFields.classList.toggle('hidden', onCode);
+                if (submitBtn) submitBtn.textContent = onCode ? 'Verify & Create Account' : 'Create Account';
+            }
+
+            function maybeAutoVerify() {
+                if (currentStep !== 'code') return;
+                if (!verificationId || !codeSent || submitting) return;
+                const codeValue = codeInput.value.trim();
+                if (codeValue.length !== OTP_LENGTH) return;
+                if (codeValue === lastAutoCode) return;
+                lastAutoCode = codeValue;
+                if (form && typeof form.requestSubmit === 'function') {
+                    form.requestSubmit();
+                } else if (form) {
+                    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+                }
+            }
+
+            function syncOtpValue() {
+                codeInput.value = otpInputs.map((input) => input.value || '').join('');
+            }
+
+            function clearOtpInputs() {
+                otpInputs.forEach((input) => {
+                    input.value = '';
+                });
+                syncOtpValue();
+            }
 
             function clearResendTimer() {
                 if (resendTimer) {
@@ -691,24 +827,14 @@ export function showCustomerAuthModal(initialMode = 'login') {
                 }, 1000);
             }
 
-            function resetVerificationState() {
-                verificationId = '';
-                codeEmail = '';
-                codeSent = false;
-                codeInput.value = '';
-                resendRemaining = 0;
-                clearResendTimer();
-                updateResendLabel();
-            }
-
-            resendBtn.addEventListener('click', async () => {
-                if (sendingCode) return;
+            async function sendVerificationCode() {
+                if (sendingCode) return false;
                 const emailValue = emailInput ? (emailInput.value || '').trim() : '';
                 if (!EMAIL_PATTERN.test(emailValue)) {
                     status.textContent = 'Enter a valid email before requesting a code.';
                     status.classList.add('error');
                     updateResendLabel();
-                    return;
+                    return false;
                 }
                 const requestedEmail = emailValue.trim();
                 const requestedEmailLower = requestedEmail.toLowerCase();
@@ -723,7 +849,7 @@ export function showCustomerAuthModal(initialMode = 'login') {
                         resetVerificationState();
                         status.textContent = 'Email updated. Request a new verification code.';
                         status.classList.add('error');
-                        return;
+                        return false;
                     }
                     verificationId = (res?.verificationId || '').trim();
                     codeEmail = requestedEmailLower;
@@ -731,15 +857,71 @@ export function showCustomerAuthModal(initialMode = 'login') {
                     status.textContent = `Verification code sent to ${requestedEmail}.`;
                     const cooldown = typeof res?.retryAfter === 'number' ? res.retryAfter : 45;
                     startResendCountdown(cooldown);
+                    setSignupStep('code');
+                    otpInputs[0]?.focus();
+                    return true;
                 } catch (err) {
                     status.textContent = err.message || 'Unable to send verification code.';
                     status.classList.add('error');
                     resendRemaining = 0;
                     clearResendTimer();
+                    return false;
                 } finally {
                     sendingCode = false;
                     updateResendLabel();
                 }
+            }
+
+            resendBtn.addEventListener('click', async () => {
+                await sendVerificationCode();
+            });
+            function resetVerificationState() {
+                verificationId = '';
+                codeEmail = '';
+                codeSent = false;
+                clearOtpInputs();
+                resendRemaining = 0;
+                clearResendTimer();
+                updateResendLabel();
+                setSignupStep('form');
+            }
+
+            otpInputs.forEach((input, index) => {
+                input.addEventListener('input', () => {
+                    const sanitized = (input.value || '').replace(/\D/g, '');
+                    input.value = sanitized.slice(-1);
+                    if (input.value && index < otpInputs.length - 1) {
+                        otpInputs[index + 1].focus();
+                    }
+                    syncOtpValue();
+                    maybeAutoVerify();
+                });
+
+                input.addEventListener('keydown', (evt) => {
+                    if (evt.key === 'Backspace' && !input.value && index > 0) {
+                        otpInputs[index - 1].focus();
+                    }
+                });
+
+                input.addEventListener('paste', (evt) => {
+                    const text = evt.clipboardData?.getData('text') || '';
+                    if (!text) return;
+                    const digits = text.replace(/\D/g, '').slice(0, OTP_LENGTH);
+                    if (!digits) return;
+                    evt.preventDefault();
+                    digits.split('').forEach((digit, idx) => {
+                        if (otpInputs[idx]) {
+                            otpInputs[idx].value = digit;
+                        }
+                    });
+                    for (let idx = digits.length; idx < otpInputs.length; idx += 1) {
+                        otpInputs[idx].value = '';
+                    }
+                    syncOtpValue();
+                    const nextIndex = Math.min(digits.length, otpInputs.length - 1);
+                    otpInputs[nextIndex].focus();
+                    maybeAutoVerify();
+                });
             });
 
             const firstInput = /** @type {HTMLInputElement} */ (el('input', { attrs: { id: 'reg-first', type: 'text', autocomplete: 'given-name', required: 'true', placeholder: 'First name' } }));
@@ -776,7 +958,8 @@ export function showCustomerAuthModal(initialMode = 'login') {
                 el('li', { attrs: { 'data-rule': 'length' } }, 'Minimum of 8 characters'),
                 el('li', { attrs: { 'data-rule': 'uppercase' } }, 'At least one uppercase letter'),
                 el('li', { attrs: { 'data-rule': 'lowercase' } }, 'At least one lowercase letter'),
-                el('li', { attrs: { 'data-rule': 'number' } }, 'At least one number')
+                el('li', { attrs: { 'data-rule': 'number' } }, 'At least one number'),
+                el('li', { attrs: { 'data-rule': 'symbol' } }, 'At least one symbol (e.g., !@#$)')
             );
             const passField = el('div', { class: 'field password-field' },
                 el('label', { attrs: { for: 'reg-pass' } }, 'Password*'),
@@ -877,8 +1060,7 @@ export function showCustomerAuthModal(initialMode = 'login') {
             });
 
             const submitBtn = el('button', { class: 'auth-submit', attrs: { type: 'submit' } }, 'Create Account');
-            const form = el('form', { class: 'auth-form signup-form', attrs: { autocomplete: 'on' } },
-                codeField,
+            const formFields = el('div', { class: 'signup-step signup-step-form' },
                 nameRow,
                 emailField,
                 passField,
@@ -890,13 +1072,18 @@ export function showCustomerAuthModal(initialMode = 'login') {
                 termsField,
                 submitBtn
             );
+            form = el('form', { class: 'auth-form signup-form', attrs: { autocomplete: 'on' } },
+                codeSection,
+                formFields
+            );
 
             function updatePasswordHints(value) {
                 const rules = {
                     length: value.length >= 8,
                     uppercase: /[A-Z]/.test(value),
                     lowercase: /[a-z]/.test(value),
-                    number: /\d/.test(value)
+                    number: /\d/.test(value),
+                    symbol: /[^A-Za-z\d]/.test(value)
                 };
                 passwordHints.querySelectorAll('li').forEach(li => {
                     const rule = li.getAttribute('data-rule');
@@ -925,27 +1112,16 @@ export function showCustomerAuthModal(initialMode = 'login') {
 
                 updatePasswordHints(pass);
 
-                if (codeEmail && codeEmail !== email.toLowerCase()) {
-                    status.textContent = 'Request a new verification code for the updated email.';
-                    status.classList.add('error');
-                    return;
-                }
-                if (!verificationId) {
-                    status.textContent = 'Request a verification code for your email before creating an account.';
-                    status.classList.add('error');
-                    return;
-                }
-                if (!code || code.length < 4) {
-                    status.textContent = 'Enter the verification code we sent you.';
-                    status.classList.add('error');
-                    return;
-                }
                 if (!firstName || !surname || !email) {
                     status.textContent = 'Please fill in all required fields.';
                     status.classList.add('error');
                     return;
                 }
-                const strongPassword = pass.length >= 8 && /[A-Z]/.test(pass) && /[a-z]/.test(pass) && /\d/.test(pass);
+                const strongPassword = pass.length >= 8
+                    && /[A-Z]/.test(pass)
+                    && /[a-z]/.test(pass)
+                    && /\d/.test(pass)
+                    && /[^A-Za-z\d]/.test(pass);
                 if (!strongPassword) {
                     status.textContent = 'Password must meet all requirements.';
                     status.classList.add('error');
@@ -969,6 +1145,24 @@ export function showCustomerAuthModal(initialMode = 'login') {
                 if (!termsChecked) {
                     status.textContent = 'You must agree to the terms to continue.';
                     status.classList.add('error');
+                    return;
+                }
+
+                if (codeEmail && codeEmail !== email.toLowerCase()) {
+                    status.textContent = 'Request a new verification code for the updated email.';
+                    status.classList.add('error');
+                    return;
+                }
+                if (!verificationId || !codeSent) {
+                    const sent = await sendVerificationCode();
+                    if (!sent) return;
+                    setSignupStep('code');
+                    return;
+                }
+                if (!code || code.length < 6) {
+                    status.textContent = 'Enter the 6-digit verification code we sent you.';
+                    status.classList.add('error');
+                    setSignupStep('code');
                     return;
                 }
 
@@ -1019,8 +1213,8 @@ export function mountCustomerHeaderControls() {
         else actions.appendChild(container);
     }
     container.innerHTML = '';
-    const hideForAdmin = !!(state.admin?.token && state.admin?.user);
-    if ((state.customer && state.customer.sessionToken) || hideForAdmin) {
+    const hideForAdmin = !!state.admin?.user;
+    if ((state.customer && state.customer.hasSession) || hideForAdmin) {
         if (hideForAdmin) {
             container.classList.add('hidden');
             return;

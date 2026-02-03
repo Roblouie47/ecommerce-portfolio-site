@@ -225,14 +225,15 @@ async function createPayMongoPaymentMethod({ customer, secretKey }) {
 	return data.data;
 }
 
-async function attachPayMongoPaymentMethod({ intentId, clientKey, paymentMethodId, secretKey }) {
+async function attachPayMongoPaymentMethod({ intentId, clientKey, paymentMethodId, secretKey, returnUrl }) {
 	if (!secretKey) throw new Error('PayMongo secret key missing');
 	const url = `https://api.paymongo.com/v1/payment_intents/${encodeURIComponent(intentId)}/attach`;
 	const payload = {
 		data: {
 			attributes: {
 				payment_method: paymentMethodId,
-				client_key: clientKey
+				client_key: clientKey,
+				return_url: returnUrl || undefined
 			}
 		}
 	};
@@ -265,13 +266,20 @@ module.exports = function createPayMongoRouter(options = {}) {
 		getCustomerSession = () => null,
 		logger = console,
 		secretKey,
-		webhookSecret
+		webhookSecret,
+		publicUrl
 	} = options;
 
 	const PAYMONGO_SECRET_KEY = secretKey || process.env.PAYMONGO_SECRET_KEY || '';
 	const WEBHOOK_SECRET = webhookSecret || process.env.PAYMONGO_WEBHOOK_SECRET || '';
 	const warn = typeof logger.warn === 'function' ? logger.warn.bind(logger) : console.warn;
 	const error = typeof logger.error === 'function' ? logger.error.bind(logger) : console.error;
+
+	function auditWebhook(action, details = {}) {
+		try {
+			audit('webhook', 'paymongo', action, null, details);
+		} catch { /* ignore */ }
+	}
 
 	const selectProduct = db.prepare('SELECT * FROM products WHERE id=?');
 	const selectVariant = db.prepare('SELECT * FROM variants WHERE id=? AND productId=?');
@@ -469,13 +477,16 @@ module.exports = function createPayMongoRouter(options = {}) {
 
 		// For GCash, create a payment method and attach to get redirect URL
 		let attachResult = null;
+		const baseUrl = (publicUrl || process.env.PUBLIC_URL || '').replace(/\/$/, '');
+		const returnUrl = `${baseUrl || 'http://localhost:3000'}/?paymongo=return&orderId=${encodeURIComponent(orderId)}`;
 		try {
 			const pm = await createPayMongoPaymentMethod({ customer, secretKey: PAYMONGO_SECRET_KEY });
 			attachResult = await attachPayMongoPaymentMethod({
 				intentId,
 				clientKey,
 				paymentMethodId: pm.id,
-				secretKey: PAYMONGO_SECRET_KEY
+				secretKey: PAYMONGO_SECRET_KEY,
+				returnUrl
 			});
 		} catch (err) {
 			warn('[paymongo] attach failed', err.message, err.paymongo?.errors?.[0] || err.paymongo || '');
@@ -500,21 +511,26 @@ module.exports = function createPayMongoRouter(options = {}) {
 
 	router.post('/paymongo-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
 		if (!WEBHOOK_SECRET) {
+			auditWebhook('not-configured');
 			return res.status(501).json({ error: 'PayMongo webhook not configured' });
 		}
 		if (!verifyPayMongoSignature(req, WEBHOOK_SECRET)) {
+			auditWebhook('invalid-signature');
 			return res.status(401).json({ error: 'Invalid webhook signature' });
 		}
 		let event;
 		try {
 			event = JSON.parse(extractRawBody(req));
 		} catch {
+			auditWebhook('invalid-payload');
 			return res.status(400).json({ error: 'Invalid webhook payload' });
 		}
 		try {
+			auditWebhook('received', { type: event?.type || 'unknown', eventId: event?.data?.id || event?.id || null });
 			await handleWebhookEvent(event);
 			res.json({ received: true });
 		} catch (err) {
+			auditWebhook('handler-error', { message: err?.message || 'Webhook handler error' });
 			error('[paymongo] webhook handler error', err);
 			res.status(500).json({ error: 'Webhook handler error' });
 		}
@@ -528,6 +544,7 @@ module.exports = function createPayMongoRouter(options = {}) {
 		const metadata = attributes.metadata || {};
 		const intentId = data.id || attributes.id || null;
 		const orderId = metadata.order_id || metadata.orderId || metadata.order_reference || null;
+		auditWebhook('payment-succeeded', { intentId: intentId || null, orderId: orderId || null });
 		let order = null;
 		if (orderId) {
 			order = getOrderById.get(orderId);

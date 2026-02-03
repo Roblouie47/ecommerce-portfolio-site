@@ -12,22 +12,23 @@
 
 // Clean, rebuilt server below
 const express = require('express');
+const helmet = require('helmet');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
+const sharp = require('sharp');
+const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const axios = require('axios');
 const nodemailer = require('nodemailer');
 const { v4: uuid } = require('uuid');
-const { PORT, ADMIN_TOKEN, ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME, STRIPE_SECRET, STRIPE_WEBHOOK_SECRET, STRIPE_PUBLISHABLE, PUBLIC_URL, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE, EMAIL_FROM, EMAIL_DEV_MODE, EMAIL_DEV_RECIPIENT, MAILBOXLAYER_API_KEY, MAILBOXLAYER_BASE_URL, MAILBOXLAYER_TIMEOUT_MS, MAILBOXLAYER_STRICT } = require('./src/config/env');
-const { isAdmin, requireAdmin, issueAdminSession } = require('./src/middleware/admin');
+const { NODE_ENV, PORT, ADMIN_TOKEN, ADMIN_TOKEN_ENABLED, ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME, PUBLIC_URL, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE, EMAIL_FROM, EMAIL_DEV_MODE, EMAIL_DEV_RECIPIENT, MAILBOXLAYER_API_KEY, MAILBOXLAYER_BASE_URL, MAILBOXLAYER_TIMEOUT_MS, MAILBOXLAYER_STRICT, CORS_ORIGINS, TRUST_PROXY, SESSION_COOKIE_NAME, SESSION_COOKIE_ONLY, SESSION_COOKIE_SECURE, SESSION_COOKIE_SAMESITE, SESSION_SECRET, JWT_SECRET } = require('./src/config/env');
+const { isAdmin, requireAdmin, issueAdminSession, revokeAdminSession, ADMIN_SESSION_COOKIE_NAME } = require('./src/middleware/admin');
 const db = require('./src/db');
 const { parseJSONField, validateProductInput, validateVariant, buildProductRow, computeCartTotals, getReviewSummary, computeProductInventory } = require('./src/utils');
 const { v4: uuidv4 } = require('uuid');
-
-const stripe = STRIPE_SECRET ? require('stripe')(STRIPE_SECRET, { apiVersion: '2023-10-16' }) : null;
 
 const VERIFICATION_CODE_LENGTH = 6;
 const EMAIL_VERIFICATION_TTL_MS = 1000 * 60 * 10; // 10 minutes
@@ -49,18 +50,73 @@ const ADMIN_LOGIN_ATTEMPT_WINDOW_MS = 1000 * 60 * 5; // 5 minutes
 const ADMIN_LOGIN_LOCKOUT_MS = 1000 * 60 * 10; // 10 minutes
 const adminLoginAttempts = new Map();
 
+const CUSTOMER_LOGIN_ATTEMPT_LIMIT = 8;
+const CUSTOMER_LOGIN_ATTEMPT_WINDOW_MS = 1000 * 60 * 10; // 10 minutes
+const CUSTOMER_LOGIN_LOCKOUT_MS = 1000 * 60 * 10; // 10 minutes
+const customerLoginAttempts = new Map();
+
+const EMAIL_CODE_IP_LIMIT = 10;
+const EMAIL_CODE_IP_WINDOW_MS = 1000 * 60 * 10; // 10 minutes
+const EMAIL_VERIFY_IP_LIMIT = 30;
+const emailCodeIpAttempts = new Map();
+const emailVerifyIpAttempts = new Map();
+
+function getIpCandidates(req) {
+  const candidates = [];
+  if (Array.isArray(req?.ips) && req.ips.length) candidates.push(...req.ips);
+  if (req?.ip) candidates.push(req.ip);
+  return candidates.map(ip => ip.toLowerCase()).filter(Boolean);
+}
+
+function getPrimaryIp(req) {
+  const candidates = getIpCandidates(req);
+  return candidates[0] || 'unknown';
+}
+
+function getIpAttemptEntry(ip, store) {
+  const now = Date.now();
+  let entry = store.get(ip);
+  if (!entry) {
+    entry = { attempts: 0, firstAttemptAt: now };
+    store.set(ip, entry);
+    return entry;
+  }
+  if (now - entry.firstAttemptAt > EMAIL_CODE_IP_WINDOW_MS) {
+    entry.attempts = 0;
+    entry.firstAttemptAt = now;
+  }
+  return entry;
+}
+
+function recordIpAttempt(ip, store) {
+  const entry = getIpAttemptEntry(ip, store);
+  entry.attempts += 1;
+  return entry;
+}
+
+function ipRateLimited(ip, store) {
+  const entry = getIpAttemptEntry(ip, store);
+  return entry.attempts >= EMAIL_CODE_IP_LIMIT;
+}
+
+function pruneIpAttempts(store) {
+  const now = Date.now();
+  for (const [ip, entry] of store.entries()) {
+    if (now - entry.firstAttemptAt > EMAIL_CODE_IP_WINDOW_MS) store.delete(ip);
+  }
+}
+
+const ipAttemptCleanupTimer = setInterval(() => {
+  pruneIpAttempts(emailCodeIpAttempts);
+  pruneIpAttempts(emailVerifyIpAttempts);
+}, 1000 * 60 * 10);
+if (typeof ipAttemptCleanupTimer.unref === 'function') ipAttemptCleanupTimer.unref();
+
 function buildAdminThrottleKey(email, req) {
   const normalizedEmail = normalizeEmail(email) || 'unknown';
   const ipCandidates = [];
   if (Array.isArray(req?.ips) && req.ips.length) ipCandidates.push(...req.ips);
   if (req?.ip) ipCandidates.push(req.ip);
-  const forwarded = req?.headers?.['x-forwarded-for'];
-  if (typeof forwarded === 'string' && forwarded.trim()) {
-    forwarded.split(',').forEach(part => {
-      const trimmed = part.trim();
-      if (trimmed) ipCandidates.push(trimmed);
-    });
-  }
   const ip = ipCandidates[0] || 'unknown';
   return `${normalizedEmail}::${ip.toLowerCase()}`;
 }
@@ -82,6 +138,56 @@ function getAdminAttemptEntry(key) {
     entry.firstAttemptAt = now;
   }
   return entry;
+}
+
+function buildCustomerThrottleKey(email, req) {
+  const normalizedEmail = normalizeEmail(email) || 'unknown';
+  const ipCandidates = [];
+  if (Array.isArray(req?.ips) && req.ips.length) ipCandidates.push(...req.ips);
+  if (req?.ip) ipCandidates.push(req.ip);
+  const ip = ipCandidates[0] || 'unknown';
+  return `${normalizedEmail}::${ip.toLowerCase()}`;
+}
+
+function getCustomerAttemptEntry(key) {
+  const now = Date.now();
+  let entry = customerLoginAttempts.get(key);
+  if (!entry) {
+    entry = { attempts: 0, firstAttemptAt: now, lockedUntil: 0 };
+    customerLoginAttempts.set(key, entry);
+    return entry;
+  }
+  if (entry.lockedUntil && entry.lockedUntil <= now) {
+    entry.attempts = 0;
+    entry.firstAttemptAt = now;
+    entry.lockedUntil = 0;
+  } else if (!entry.lockedUntil && now - entry.firstAttemptAt > CUSTOMER_LOGIN_ATTEMPT_WINDOW_MS) {
+    entry.attempts = 0;
+    entry.firstAttemptAt = now;
+  }
+  return entry;
+}
+
+function recordCustomerLoginFailure(entry) {
+  entry.attempts += 1;
+  if (entry.attempts >= CUSTOMER_LOGIN_ATTEMPT_LIMIT) {
+    entry.lockedUntil = Date.now() + CUSTOMER_LOGIN_LOCKOUT_MS;
+  }
+}
+
+function clearCustomerLoginAttempts(key) {
+  customerLoginAttempts.delete(key);
+}
+
+function pruneCustomerLoginAttempts() {
+  const now = Date.now();
+  for (const [key, entry] of customerLoginAttempts.entries()) {
+    const expiredWindow = !entry.lockedUntil && now - entry.firstAttemptAt > CUSTOMER_LOGIN_ATTEMPT_WINDOW_MS;
+    const lockExpired = entry.lockedUntil && entry.lockedUntil <= now;
+    if (expiredWindow || lockExpired) {
+      customerLoginAttempts.delete(key);
+    }
+  }
 }
 
 function recordAdminLoginFailure(entry) {
@@ -109,6 +215,9 @@ function pruneAdminLoginAttempts() {
 const adminLoginCleanupTimer = setInterval(pruneAdminLoginAttempts, 1000 * 60 * 5);
 if (typeof adminLoginCleanupTimer.unref === 'function') adminLoginCleanupTimer.unref();
 
+const customerLoginCleanupTimer = setInterval(pruneCustomerLoginAttempts, 1000 * 60 * 10);
+if (typeof customerLoginCleanupTimer.unref === 'function') customerLoginCleanupTimer.unref();
+
 const EMAIL_SENDER = EMAIL_FROM || SMTP_USER || '';
 let mailTransport = null;
 if (SMTP_HOST && EMAIL_SENDER) {
@@ -133,7 +242,96 @@ if (SMTP_HOST && EMAIL_SENDER) {
   console.warn('[mail] Email transport not configured; dev mode enabled (codes logged locally).');
 }
 
+function getPublicOrigin() {
+  try {
+    const parsed = new URL(PUBLIC_URL);
+    return parsed.origin;
+  } catch {
+    return 'http://localhost:' + PORT;
+  }
+}
+
+function getAllowedOrigins() {
+  const base = Array.isArray(CORS_ORIGINS) && CORS_ORIGINS.length
+    ? CORS_ORIGINS
+    : [getPublicOrigin()];
+  return base.filter(Boolean);
+}
+
+function extractOrigin(req) {
+  const origin = req.headers.origin;
+  if (typeof origin === 'string' && origin.trim()) return origin.trim();
+  const referer = req.headers.referer || req.headers.referrer;
+  if (typeof referer === 'string' && referer.trim()) {
+    try {
+      return new URL(referer).origin;
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
+function isSameOriginRequest(req) {
+  const origin = extractOrigin(req);
+  if (!origin) return false;
+  return getAllowedOrigins().includes(origin);
+}
+
+function parseCookieHeader(header) {
+  const result = {};
+  if (!header || typeof header !== 'string') return result;
+  header.split(';').forEach(part => {
+    const idx = part.indexOf('=');
+    if (idx === -1) return;
+    const key = part.slice(0, idx).trim();
+    const val = part.slice(idx + 1).trim();
+    if (!key) return;
+    result[key] = decodeURIComponent(val);
+  });
+  return result;
+}
+
+function setCustomerSessionCookie(res, token) {
+  if (!token) return;
+  res.cookie(SESSION_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: SESSION_COOKIE_SECURE,
+    sameSite: SESSION_COOKIE_SAMESITE,
+    maxAge: CUSTOMER_SESSION_TTL_MS
+  });
+}
+
+function clearCustomerSessionCookie(res) {
+  res.clearCookie(SESSION_COOKIE_NAME, {
+    httpOnly: true,
+    secure: SESSION_COOKIE_SECURE,
+    sameSite: SESSION_COOKIE_SAMESITE
+  });
+}
+
 const app = express();
+
+if (NODE_ENV === 'production') {
+  if (!SESSION_SECRET || SESSION_SECRET.length < 32) {
+    throw new Error('SESSION_SECRET must be at least 32 characters in production.');
+  }
+  if (!JWT_SECRET || JWT_SECRET.length < 32) {
+    throw new Error('JWT_SECRET must be at least 32 characters in production.');
+  }
+  if (!SESSION_COOKIE_ONLY) {
+    throw new Error('SESSION_COOKIE_ONLY must be enabled in production to avoid token exposure.');
+  }
+  if (ADMIN_TOKEN_ENABLED && (!ADMIN_TOKEN || ADMIN_TOKEN === 'changeme' || ADMIN_TOKEN.length < 32)) {
+    throw new Error('ADMIN_TOKEN must be a strong random value or disable ADMIN_TOKEN_ENABLED in production.');
+  }
+  if (EMAIL_DEV_MODE) {
+    throw new Error('EMAIL_DEV_MODE must be disabled in production.');
+  }
+  if (!PUBLIC_URL || !/^https:\/\//i.test(PUBLIC_URL)) {
+    throw new Error('PUBLIC_URL must be an https URL in production.');
+  }
+}
 
 // Register refund-reopen endpoint after app and middleware setup
 app.post('/api/orders/:id/refund-reopen', (req, res) => {
@@ -165,16 +363,73 @@ app.post('/api/orders/:id/refund-reopen', (req, res) => {
 });
 // --- PayMongo route ---
 const createPaymongoRouter = require('./src/routes/paymongo');
-app.set('trust proxy', true);
+app.set('trust proxy', TRUST_PROXY);
 // Disable default ETag so dynamic API responses (discount lookups) don't 304 and break client discount fetch logic
 app.set('etag', false);
-app.use(cors());
-if (stripe && STRIPE_WEBHOOK_SECRET) {
-  app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), handleStripeWebhook);
-}
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  referrerPolicy: { policy: 'no-referrer' },
+  permissionsPolicy: {
+    policy: {
+      accelerometer: [],
+      autoplay: [],
+      camera: [],
+      geolocation: [],
+      gyroscope: [],
+      magnetometer: [],
+      microphone: [],
+      midi: [],
+      payment: [],
+      usb: [],
+      interestCohort: []
+    }
+  },
+  frameguard: { action: 'deny' },
+  noSniff: true,
+  contentSecurityPolicy: {
+    useDefaults: true,
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'"],
+      imgSrc: ["'self'", 'https:', 'data:'],
+      connectSrc: ["'self'"],
+      fontSrc: ["'self'", 'https:', 'data:'],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      frameAncestors: ["'none'"]
+    }
+  }
+}));
+
+const allowedOrigins = getAllowedOrigins();
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true
+}));
+app.use((req, res, next) => {
+  const isWrite = /^(POST|PUT|DELETE|PATCH)$/i.test(req.method);
+  if (!isWrite) return next();
+  if (isSameOriginRequest(req)) return next();
+  return res.status(403).json({ error: 'Blocked by CSRF protection' });
+});
 app.use(express.json());
 
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: NODE_ENV === 'production' ? 300 : 1000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Please try again later.' }
+});
+app.use('/api', apiLimiter);
+
 const CUSTOMER_SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+const ADMIN_SESSION_TTL_MS = 1000 * 60 * 60 * 12; // 12 hours
 const selectUserByEmailStmt = db.prepare('SELECT id, email, passwordHash, name, role, avatarUrl, country, address FROM users WHERE LOWER(email) = LOWER(?) LIMIT 1');
 const insertUserStmt = db.prepare('INSERT INTO users (id, email, passwordHash, name, role, avatarUrl, country, address, createdAt) VALUES (@id, @email, @passwordHash, @name, @role, @avatarUrl, @country, @address, @createdAt)');
 const selectSessionWithUserStmt = db.prepare(`SELECT s.id AS sessionId, s.token, s.createdAt AS sessionCreatedAt, s.expiresAt, u.id AS userId, u.email, u.name, u.role, u.avatarUrl, u.country, u.address FROM sessions s JOIN users u ON u.id = s.userId WHERE s.token = ?`);
@@ -197,6 +452,11 @@ function sanitizeUserRow(row) {
 }
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z\d]).{8,}$/;
+
+function isStrongPassword(value) {
+  return PASSWORD_REGEX.test(value || '');
+}
 app.post('/api/customer/register', async (req, res) => {
   try {
     // Email verification required for registration
@@ -204,7 +464,9 @@ app.post('/api/customer/register', async (req, res) => {
     const email = normalizeEmail(rawEmail);
     const passwordValue = typeof password === 'string' ? password : '';
     if (!email || !EMAIL_REGEX.test(email)) return res.status(400).json({ error: 'A valid email is required' });
-    if (passwordValue.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    if (!isStrongPassword(passwordValue)) {
+      return res.status(400).json({ error: 'Password must be 8+ characters and include uppercase, lowercase, number, and symbol.' });
+    }
     const existing = selectUserByEmailStmt.get(email);
     if (existing) return res.status(409).json({ error: 'Email already registered' });
 
@@ -256,6 +518,7 @@ app.post('/api/customer/register', async (req, res) => {
     });
     const session = createCustomerSession(userId);
     const user = sanitizeUserRow({ userId, email, name, avatarUrl, country, address });
+    setCustomerSessionCookie(res, session.token);
     res.status(201).json(buildCustomerSessionResponse({ ...session, user }));
   } catch (err) {
     console.error('[customer] register failed', err);
@@ -391,6 +654,13 @@ const DEFAULT_ADMIN_NAME = clampText(ADMIN_NAME || 'Store Admin', 120) || 'Store
   try {
     const existing = selectUserByEmailStmt.get(email);
     if (existing && existing.role === 'admin') {
+      const passwordOk = bcrypt.compareSync(password, existing.passwordHash || '');
+      if (!passwordOk) {
+        const passwordHash = bcrypt.hashSync(password, 12);
+        db.prepare('UPDATE users SET passwordHash=?, name=? WHERE id=?')
+          .run(passwordHash, existing.name || DEFAULT_ADMIN_NAME, existing.id);
+        console.log('[admin-account] Updated admin password from env configuration.');
+      }
       return;
     }
     const passwordHash = bcrypt.hashSync(password, 12);
@@ -420,7 +690,7 @@ const DEFAULT_ADMIN_NAME = clampText(ADMIN_NAME || 'Store Admin', 120) || 'Store
 
 function buildCustomerSessionResponse(session) {
   return {
-    token: session.token,
+    token: SESSION_COOKIE_ONLY ? undefined : session.token,
     user: session.user,
     expiresAt: session.expiresAt
   };
@@ -458,11 +728,18 @@ function createCustomerSession(userId) {
 }
 
 function getCustomerSession(req) {
+  let token = '';
   const authHeader = req.headers.authorization || req.headers.Authorization;
-  if (!authHeader || typeof authHeader !== 'string') return null;
-  const parts = authHeader.split(' ');
-  if (parts.length !== 2 || !/^Bearer$/i.test(parts[0])) return null;
-  const token = parts[1].trim();
+  if (authHeader && typeof authHeader === 'string') {
+    const parts = authHeader.split(' ');
+    if (parts.length === 2 && /^Bearer$/i.test(parts[0])) {
+      token = parts[1].trim();
+    }
+  }
+  if (!token) {
+    const cookies = parseCookieHeader(req.headers.cookie);
+    token = cookies[SESSION_COOKIE_NAME] || '';
+  }
   if (!token) return null;
   pruneExpiredCustomerSessions();
   const sessionRow = selectSessionWithUserStmt.get(token);
@@ -892,7 +1169,7 @@ try {
   console.warn('Auto seed skipped:', e.message);
 }
 
-// -------------------- In-memory metrics & rate limiting --------------------
+// -------------------- In-memory metrics --------------------
 const metrics = {
   requests: 0,
   errors: 0,
@@ -901,8 +1178,6 @@ const metrics = {
   discountsCreated: 0,
   startTime: Date.now()
 };
-const rateBucket = new Map(); // key=> {count, reset}
-const RATE_LIMIT = { windowMs: 60_000, max: 120, writeMax: 40 }; // per IP per minute
 
 app.use('/api', createPaymongoRouter({
   db,
@@ -911,21 +1186,9 @@ app.use('/api', createPaymongoRouter({
   baseShippingFor,
   audit,
   metrics,
-  getCustomerSession
+  getCustomerSession,
+  publicUrl: PUBLIC_URL
 }));
-
-function rateLimit(req, res, next) {
-  const ip = req.ip || req.connection.remoteAddress || 'unknown';
-  const now = Date.now();
-  let b = rateBucket.get(ip);
-  if (!b || b.reset < now) { b = { count: 0, write: 0, reset: now + RATE_LIMIT.windowMs }; rateBucket.set(ip, b); }
-  b.count++;
-  const isWrite = /^(POST|PUT|DELETE|PATCH)$/i.test(req.method);
-  if (isWrite) b.write++;
-  if (b.count > RATE_LIMIT.max || (isWrite && b.write > RATE_LIMIT.writeMax)) return res.status(429).json({ error: 'Rate limit exceeded' });
-  next();
-}
-app.use(rateLimit);
 
 // Simple request logger
 app.use((req, res, next) => {
@@ -947,58 +1210,16 @@ function audit(entity, entityId, action, beforeObj, afterObj) {
   } catch (e) { /* swallow */ }
 }
 
-async function finalizeStripeOrder(session) {
-  if (!session) return;
-  const metadata = session.metadata || {};
-  const orderId = metadata.orderId;
-  const sessionId = session.id;
-  if (!orderId && !sessionId) return;
-  let order = null;
-  if (orderId) {
-    order = db.prepare('SELECT * FROM orders WHERE id=?').get(orderId);
-  }
-  if (!order && sessionId) {
-    order = db.prepare('SELECT * FROM orders WHERE stripeSessionId=?').get(sessionId);
-  }
-  if (!order) {
-    console.warn('[stripe] order not found for session', sessionId);
-    return;
-  }
-  if (order.paidAt || order.cancelledAt) return;
-  const now = new Date().toISOString();
-  db.prepare('UPDATE orders SET status=?, cancelledAt=? WHERE id=?').run('cancelled', now, order.id);
-  db.prepare('INSERT INTO order_events(id,orderId,status,at) VALUES(?,?,?,?)').run(uuidv4(), order.id, 'cancelled', now);
-  audit('order', order.id, 'stripe-expired', { status: order.status }, { status: 'cancelled' });
+function buildAuditContext(req, extra = {}) {
+  return {
+    ip: getPrimaryIp(req),
+    userAgent: req?.headers?.['user-agent'] || '',
+    ...extra
+  };
 }
 
-async function handleStripeWebhook(req, res) {
-  if (!stripe || !STRIPE_WEBHOOK_SECRET) {
-    return res.status(501).send('Stripe disabled');
-  }
-  const signature = req.headers['stripe-signature'];
-  let event;
-  try {
-    event = stripe.webhooks.constructEvent(req.body, signature, STRIPE_WEBHOOK_SECRET);
-  } catch (err) {
-    console.error('[stripe] webhook signature verification failed:', err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
-  }
-  try {
-    switch (event.type) {
-      case 'checkout.session.completed':
-        await finalizeStripeOrder(event.data.object);
-        break;
-      case 'checkout.session.expired':
-        await markStripeOrderExpired(event.data.object);
-        break;
-      default:
-        break;
-    }
-    res.json({ received: true });
-  } catch (err) {
-    console.error('[stripe] webhook handler error', err);
-    res.status(500).send('Webhook handler error');
-  }
+function auditAuthEvent(req, email, action, details = {}) {
+  audit('auth', email || null, action, null, buildAuditContext(req, details));
 }
 
 // ETag cache for product list (very small naive implementation)
@@ -1014,17 +1235,67 @@ function buildProductsETag(rows) {
 // --- Upload setup ---
 const uploadDir = path.join(__dirname, 'public', 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadDir),
-  filename: (_req, file, cb) => cb(null, uuid() + path.extname(file.originalname || '.bin'))
+const allowedImageTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/avif']);
+const allowedExtByMime = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'image/avif': 'avif'
+};
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (!allowedImageTypes.has(file.mimetype)) {
+      return cb(new Error('Only JPEG, PNG, WebP, or AVIF images are allowed.'), false);
+    }
+    cb(null, true);
+  }
 });
-const upload = multer({ storage });
+
+async function storeSanitizedImage(file) {
+  if (!file || !file.buffer) throw new Error('No file data');
+  const { fileTypeFromBuffer } = await import('file-type');
+  const detected = await fileTypeFromBuffer(file.buffer);
+  if (!detected || !allowedImageTypes.has(detected.mime)) {
+    throw new Error('Invalid image signature.');
+  }
+  const ext = allowedExtByMime[detected.mime] || 'bin';
+  const filename = `${uuid()}.${ext}`;
+  const outPath = path.join(uploadDir, filename);
+
+  let pipeline = sharp(file.buffer, { failOnError: true });
+  switch (detected.mime) {
+    case 'image/jpeg':
+      pipeline = pipeline.jpeg({ quality: 85, mozjpeg: true });
+      break;
+    case 'image/png':
+      pipeline = pipeline.png({ compressionLevel: 9, adaptiveFiltering: true });
+      break;
+    case 'image/webp':
+      pipeline = pipeline.webp({ quality: 85 });
+      break;
+    case 'image/avif':
+      pipeline = pipeline.avif({ quality: 60, effort: 6 });
+      break;
+    default:
+      throw new Error('Unsupported image type.');
+  }
+
+  await pipeline.toFile(outPath);
+  return filename;
+}
 // Memory storage for CSV import (avoid keeping uploaded files)
 const uploadMemory = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
 
 // ---------- Customer Authentication Endpoints ----------
 app.post('/api/customer/register/send-code', async (req, res) => {
   try {
+    const ip = getPrimaryIp(req);
+    if (ipRateLimited(ip, emailCodeIpAttempts)) {
+      return res.status(429).json({ error: 'Too many requests. Try again later.' });
+    }
+    recordIpAttempt(ip, emailCodeIpAttempts);
     const transportReady = !!(mailTransport && EMAIL_SENDER && SMTP_HOST);
     if (!transportReady && !EMAIL_DEV_MODE) {
       return res.status(503).json({ error: 'Email delivery is not configured' });
@@ -1069,7 +1340,7 @@ app.post('/api/customer/register/send-code', async (req, res) => {
     };
     pendingVerificationCodes.set(verificationId, entry);
     verificationIndexByEmail.set(email, verificationId);
-    const devModeActive = EMAIL_DEV_MODE && !transportReady;
+    const devModeActive = EMAIL_DEV_MODE && !transportReady && NODE_ENV !== 'production';
     try {
       await sendVerificationEmail(email, code);
     } catch (err) {
@@ -1086,8 +1357,7 @@ app.post('/api/customer/register/send-code', async (req, res) => {
       verificationId,
       expiresIn: Math.ceil(EMAIL_VERIFICATION_TTL_MS / 1000),
       retryAfter: Math.ceil(EMAIL_VERIFICATION_RESEND_MS / 1000),
-      devMode: devModeActive,
-      devCode: devModeActive ? code : undefined
+      devMode: devModeActive
     });
   } catch (err) {
     console.error('[customer] send verification code failed', err);
@@ -1098,11 +1368,18 @@ app.post('/api/customer/register/send-code', async (req, res) => {
 
 app.post('/api/customer/register', async (req, res) => {
   try {
+    const ip = getPrimaryIp(req);
+    if (ipRateLimited(ip, emailVerifyIpAttempts)) {
+      return res.status(429).json({ error: 'Too many attempts. Try again later.' });
+    }
+    recordIpAttempt(ip, emailVerifyIpAttempts);
     const { email: rawEmail, password, name: rawName, avatarUrl: rawAvatar, country: rawCountry, address: rawAddress, verificationId: rawVerificationId, verificationCode: rawVerificationCode } = req.body || {};
     const email = normalizeEmail(rawEmail);
     const passwordValue = typeof password === 'string' ? password : '';
     if (!email || !EMAIL_REGEX.test(email)) return res.status(400).json({ error: 'A valid email is required' });
-    if (passwordValue.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    if (!isStrongPassword(passwordValue)) {
+      return res.status(400).json({ error: 'Password must be 8+ characters and include uppercase, lowercase, number, and symbol.' });
+    }
     const existing = selectUserByEmailStmt.get(email);
     if (existing) return res.status(409).json({ error: 'Email already registered' });
 
@@ -1163,6 +1440,11 @@ app.post('/api/customer/register', async (req, res) => {
 
 app.post('/api/customer/password-reset/send-code', async (req, res) => {
   try {
+    const ip = getPrimaryIp(req);
+    if (ipRateLimited(ip, emailCodeIpAttempts)) {
+      return res.status(429).json({ error: 'Too many requests. Try again later.' });
+    }
+    recordIpAttempt(ip, emailCodeIpAttempts);
     const transportReady = !!(mailTransport && EMAIL_SENDER && SMTP_HOST);
     if (!transportReady && !EMAIL_DEV_MODE) {
       return res.status(503).json({ error: 'Email delivery is not configured' });
@@ -1195,7 +1477,7 @@ app.post('/api/customer/password-reset/send-code', async (req, res) => {
 
     const user = selectUserByEmailStmt.get(email);
     if (!user) {
-      return res.json({ sent: true, retryAfter: Math.ceil(PASSWORD_RESET_RESEND_MS / 1000) });
+      return res.status(404).json({ error: 'No account found with that email address.' });
     }
 
     const codeNumber = crypto.randomInt(0, Math.pow(10, PASSWORD_RESET_CODE_LENGTH));
@@ -1238,22 +1520,30 @@ app.post('/api/customer/password-reset/send-code', async (req, res) => {
 
 app.post('/api/customer/password-reset/verify-code', async (req, res) => {
   try {
+    const ip = getPrimaryIp(req);
+    if (ipRateLimited(ip, emailVerifyIpAttempts)) {
+      return res.status(429).json({ error: 'Too many attempts. Try again later.' });
+    }
+    recordIpAttempt(ip, emailVerifyIpAttempts);
     const { email: rawEmail, resetId: rawResetId, resetCode: rawResetCode } = req.body || {};
     const email = normalizeEmail(rawEmail);
     if (!email || !EMAIL_REGEX.test(email)) return res.status(400).json({ error: 'A valid email is required' });
     const resetId = typeof rawResetId === 'string' ? rawResetId.trim() : '';
     const resetCode = typeof rawResetCode === 'string' ? rawResetCode.trim() : '';
     if (!resetId || !resetCode) {
+      auditAuthEvent(req, email, 'password-reset-verify-failed', { reason: 'missing-code' });
       return res.status(400).json({ error: 'Reset code is required' });
     }
     const entry = pendingPasswordResetCodes.get(resetId);
     if (!entry || entry.email !== email) {
+      auditAuthEvent(req, email, 'password-reset-verify-failed', { reason: 'invalid-or-expired' });
       return res.status(400).json({ error: 'Reset code invalid or expired. Request a new code.' });
     }
     const nowMs = Date.now();
     if (entry.expiresAt <= nowMs) {
       pendingPasswordResetCodes.delete(resetId);
       if (passwordResetIndexByEmail.get(email) === resetId) passwordResetIndexByEmail.delete(email);
+      auditAuthEvent(req, email, 'password-reset-verify-failed', { reason: 'expired' });
       return res.status(400).json({ error: 'Reset code expired. Request a new code.' });
     }
     const attemptHash = hashVerificationCode(resetCode);
@@ -1262,8 +1552,10 @@ app.post('/api/customer/password-reset/verify-code', async (req, res) => {
       if (entry.attempts >= MAX_PASSWORD_RESET_ATTEMPTS) {
         pendingPasswordResetCodes.delete(resetId);
         if (passwordResetIndexByEmail.get(email) === resetId) passwordResetIndexByEmail.delete(email);
+        auditAuthEvent(req, email, 'password-reset-verify-failed', { reason: 'too-many-attempts' });
         return res.status(400).json({ error: 'Too many incorrect attempts. Request a new code.' });
       }
+      auditAuthEvent(req, email, 'password-reset-verify-failed', { reason: 'incorrect-code' });
       return res.status(400).json({ error: 'Incorrect reset code' });
     }
     res.json({ valid: true });
@@ -1275,6 +1567,11 @@ app.post('/api/customer/password-reset/verify-code', async (req, res) => {
 
 app.post('/api/customer/password-reset/confirm', async (req, res) => {
   try {
+    const ip = getPrimaryIp(req);
+    if (ipRateLimited(ip, emailVerifyIpAttempts)) {
+      return res.status(429).json({ error: 'Too many attempts. Try again later.' });
+    }
+    recordIpAttempt(ip, emailVerifyIpAttempts);
     const { email: rawEmail, password, resetId: rawResetId, resetCode: rawResetCode } = req.body || {};
     const email = normalizeEmail(rawEmail);
     const passwordValue = typeof password === 'string' ? password : '';
@@ -1332,21 +1629,42 @@ app.post('/api/customer/login', async (req, res) => {
     const email = normalizeEmail(rawEmail);
     const passwordValue = typeof password === 'string' ? password : '';
     if (!email || !EMAIL_REGEX.test(email) || !passwordValue) {
+      auditAuthEvent(req, email || null, 'customer-login-failed', { reason: 'missing-credentials' });
       return res.status(400).json({ error: 'Email and password are required' });
     }
+    const throttleKey = buildCustomerThrottleKey(email, req);
+    const attemptEntry = getCustomerAttemptEntry(throttleKey);
+    if (attemptEntry.lockedUntil && attemptEntry.lockedUntil > Date.now()) {
+      const retrySeconds = Math.ceil((attemptEntry.lockedUntil - Date.now()) / 1000);
+      auditAuthEvent(req, email, 'customer-login-locked', { retryAfterSeconds: retrySeconds });
+      return res.status(429).json({ error: `Too many attempts. Try again in ${retrySeconds} seconds.` });
+    }
     const userRow = selectUserByEmailStmt.get(email);
-    if (!userRow) return res.status(401).json({ error: 'Invalid email or password' });
+    if (!userRow) {
+      recordCustomerLoginFailure(attemptEntry);
+      auditAuthEvent(req, email, 'customer-login-failed', { reason: 'invalid-credentials' });
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
     const passwordOk = await comparePassword(passwordValue, userRow.passwordHash || '');
-    if (!passwordOk) return res.status(401).json({ error: 'Invalid email or password' });
+    if (!passwordOk) {
+      recordCustomerLoginFailure(attemptEntry);
+      auditAuthEvent(req, email, 'customer-login-failed', { reason: 'invalid-credentials' });
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    clearCustomerLoginAttempts(throttleKey);
     const role = (userRow.role || 'customer').toLowerCase();
     const sanitized = sanitizeUserRow(userRow);
     if (role === 'admin') {
-      return res.json({ admin: { token: ADMIN_TOKEN, user: { ...sanitized, role: 'admin' } } });
+      auditAuthEvent(req, email, 'customer-login-failed', { reason: 'admin-account' });
+      return res.status(403).json({ error: 'Use the admin sign-in endpoint for admin accounts.' });
     }
     if (role && role !== 'customer') {
+      auditAuthEvent(req, email, 'customer-login-failed', { reason: 'unsupported-role', role });
       return res.status(403).json({ error: 'Unsupported account type' });
     }
     const session = createCustomerSession(userRow.id);
+    auditAuthEvent(req, email, 'customer-login-success');
+    setCustomerSessionCookie(res, session.token);
     res.json(buildCustomerSessionResponse({ ...session, user: sanitized }));
   } catch (err) {
     console.error('[customer] login failed', err);
@@ -1358,6 +1676,7 @@ app.get('/api/customer/session', (req, res) => {
   try {
     const session = getCustomerSession(req);
     if (!session) return res.status(401).json({ error: 'Session expired' });
+    setCustomerSessionCookie(res, session.token);
     res.json(buildCustomerSessionResponse(session));
   } catch (err) {
     console.error('[customer] session check failed', err);
@@ -1379,6 +1698,7 @@ app.post('/api/customer/logout', (req, res) => {
         }
       }
     }
+    clearCustomerSessionCookie(res);
     res.status(204).end();
   } catch (err) {
     console.error('[customer] logout failed', err);
@@ -1405,10 +1725,19 @@ function normalizeRefundStatus(value, fallback = 'in_review') {
 // ---------- Product Endpoints ----------
 app.get('/api/products', (req, res) => {
   const { search = '', tag, page = '1', pageSize = '20', sort = 'createdAt:desc' } = req.query;
-  const [sortField, sortDirRaw] = sort.split(':');
-  const allowedSort = new Set(['createdAt', 'priceCents', 'title']);
-  const field = allowedSort.has(sortField) ? sortField : 'createdAt';
-  const dir = (sortDirRaw || 'desc').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+  const [sortFieldRaw, sortDirRaw] = String(sort || '').split(':');
+  const sortField = String(sortFieldRaw || 'createdAt');
+  const sortDir = (sortDirRaw || 'desc').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+  const sortKey = `${sortField}:${sortDir}`;
+  const sortMap = {
+    'createdAt:ASC': 'ORDER BY createdAt ASC',
+    'createdAt:DESC': 'ORDER BY createdAt DESC',
+    'priceCents:ASC': 'ORDER BY priceCents ASC',
+    'priceCents:DESC': 'ORDER BY priceCents DESC',
+    'title:ASC': 'ORDER BY title ASC',
+    'title:DESC': 'ORDER BY title DESC'
+  };
+  const orderClause = sortMap[sortKey] || sortMap['createdAt:DESC'];
   const limit = Math.min(parseInt(pageSize, 10) || 20, 100);
   const offset = ((parseInt(page, 10) || 1) - 1) * limit;
   const where = [];
@@ -1419,7 +1748,7 @@ app.get('/api/products', (req, res) => {
   const includeDeleted = isAdmin(req) && (req.query.includeDeleted === '1' || req.query.includeDeleted === 'true');
   const visibilityClause = includeDeleted ? '1=1' : 'deletedAt IS NULL';
   const finalWhere = whereSQL ? whereSQL + ' AND ' + visibilityClause : 'WHERE ' + visibilityClause;
-  const rows = db.prepare(`SELECT * FROM products ${finalWhere} ORDER BY ${field} ${dir} LIMIT @limit OFFSET @offset`).all(params);
+  const rows = db.prepare(`SELECT * FROM products ${finalWhere} ${orderClause} LIMIT @limit OFFSET @offset`).all(params);
   const countRow = db.prepare(`SELECT COUNT(*) as c FROM products ${finalWhere}`).get(params);
   const products = rows.map(buildProductRow);
   const etag = buildProductsETag(rows);
@@ -1469,9 +1798,11 @@ app.get('/api/products/:id/reviews', (req, res) => {
 app.post('/api/products/:id/reviews', async (req, res) => {
   const product = selectProductBasicStmt.get(req.params.id);
   if (!product) return res.status(404).json({ error: 'Product not found' });
-  const { orderId, email, name, rating, title, body } = req.body || {};
-  const trimmedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
-  if (!orderId || !trimmedEmail) return res.status(400).json({ error: 'Order ID and email required for verification' });
+  const { orderId, name, rating, title, body } = req.body || {};
+  const session = getCustomerSession(req);
+  const trimmedEmail = session?.user?.email?.trim().toLowerCase() || '';
+  if (!session || !trimmedEmail) return res.status(401).json({ error: 'Sign-in required to submit reviews' });
+  if (!orderId) return res.status(400).json({ error: 'Order ID required for verification' });
   const ratingInt = parseInt(rating, 10);
   if (!Number.isInteger(ratingInt) || ratingInt < 1 || ratingInt > 5) return res.status(400).json({ error: 'Rating must be 1-5' });
   const bodyText = typeof body === 'string' ? body.trim() : '';
@@ -1480,7 +1811,7 @@ app.post('/api/products/:id/reviews', async (req, res) => {
   const order = selectOrderForReviewStmt.get(orderId);
   if (!order) return res.status(400).json({ error: 'Order not found' });
   const orderEmail = (order.customerEmail || '').trim().toLowerCase();
-  if (!orderEmail || orderEmail !== trimmedEmail) return res.status(400).json({ error: 'Email does not match order' });
+  if (!orderEmail || orderEmail !== trimmedEmail) return res.status(403).json({ error: 'Order does not belong to this account' });
   const eligibleStatuses = new Set(['paid', 'fulfilled', 'completed', 'shipped']);
   const eligible = !!order.paidAt || eligibleStatuses.has(order.status) || order.paymentProvider === 'manual';
   if (!eligible) return res.status(400).json({ error: 'Order not yet paid or fulfilled' });
@@ -1739,187 +2070,6 @@ app.post('/api/carts/:id/items', (req, res) => {
   db.prepare('INSERT INTO cart_items (id,cartId,productId,variantId,quantity) VALUES (?,?,?,?,?)').run(id, cart.id, productId, variantId, quantity);
   db.prepare('UPDATE carts SET updatedAt=? WHERE id=?').run(new Date().toISOString(), cart.id);
   res.status(201).json({ created: true, id });
-});
-
-app.post('/api/checkout/stripe/session', async (req, res) => {
-  if (!stripe || !STRIPE_SECRET || !STRIPE_PUBLISHABLE) {
-    return res.status(501).json({ error: 'Stripe not configured' });
-  }
-  const session = getCustomerSession(req);
-  if (!session) {
-    return res.status(401).json({ error: 'Login required' });
-  }
-  let { items, customer, discountCode, shippingCode } = req.body || {};
-  const sessionUser = session.user || {};
-  customer = {
-    ...customer,
-    email: customer?.email || sessionUser.email || null,
-    name: customer?.name || sessionUser.name || null,
-    address: customer?.address || sessionUser.address || null,
-    country: customer?.country || sessionUser.country || null
-  };
-  if (!Array.isArray(items) || !items.length) {
-    return res.status(400).json({ error: 'items[] required' });
-  }
-  if (discountCode && typeof discountCode === 'string') discountCode = discountCode.trim().toUpperCase(); else discountCode = undefined;
-  if (shippingCode && typeof shippingCode === 'string') shippingCode = shippingCode.trim().toUpperCase(); else shippingCode = undefined;
-  const normalized = [];
-  let subtotal = 0;
-  for (const [idx, line] of items.entries()) {
-    if (!line || typeof line !== 'object') return res.status(400).json({ error: `items[${idx}] invalid` });
-    const { productId, quantity, variantId = null } = line;
-    if (!productId || !Number.isInteger(quantity) || quantity <= 0) {
-      return res.status(400).json({ error: `items[${idx}] productId and positive quantity required` });
-    }
-    const product = db.prepare('SELECT * FROM products WHERE id=?').get(productId);
-    if (!product) return res.status(400).json({ error: `items[${idx}] product not found` });
-    let unitPrice = product.priceCents;
-    let resolvedVariantId = null;
-    if (variantId) {
-      const variant = db.prepare('SELECT * FROM variants WHERE id=? AND productId=?').get(variantId, productId);
-      if (!variant) return res.status(400).json({ error: `items[${idx}] variant not found for product` });
-      if (variant.inventory < quantity) return res.status(400).json({ error: `items[${idx}] insufficient inventory` });
-      unitPrice = variant.priceCents != null ? variant.priceCents : product.priceCents;
-      resolvedVariantId = variant.id;
-    } else {
-      const hasVariants = db.prepare('SELECT 1 FROM variants WHERE productId=? LIMIT 1').get(productId);
-      if (hasVariants) return res.status(400).json({ error: `items[${idx}] variantId required for product with variants` });
-      if (product.baseInventory < quantity) return res.status(400).json({ error: `items[${idx}] insufficient inventory` });
-    }
-    subtotal += unitPrice * quantity;
-    normalized.push({
-      productId,
-      quantity,
-      variantId: resolvedVariantId,
-      title: product.title,
-      unitPriceCents: unitPrice,
-      shippingFeeCents: product.shippingFeeCents || 0
-    });
-  }
-  let discountCents = 0;
-  if (discountCode) {
-    const d = db.prepare('SELECT * FROM discounts WHERE code=?').get(discountCode);
-    if (d) {
-      const nowMs = Date.now();
-      const isShipOnly = d.type === 'ship' || (/SHIP/i.test(d.code || '') && d.value === 100);
-      if (!isShipOnly && (!d.expiresAt || new Date(d.expiresAt).getTime() > nowMs)) {
-        if (subtotal >= d.minSubtotalCents) {
-          if (d.type === 'percent') {
-            const pct = Math.min(100, Math.max(0, d.value));
-            discountCents = Math.floor(subtotal * (pct / 100));
-          } else if (d.type === 'fixed') {
-            discountCents = Math.min(subtotal, d.value);
-          }
-        }
-      }
-    }
-  }
-  // Shipping
-  const customerCountry = customer?.country || null;
-  let perItemShipping = 0;
-  for (const line of normalized) {
-    perItemShipping += line.shippingFeeCents * line.quantity;
-  }
-  let shippingCents;
-  const isPH = ['PH', 'PHL', 'PHILIPPINES'].includes((customerCountry || '').toUpperCase());
-  if (isPH) {
-    shippingCents = 200;
-  } else {
-    shippingCents = baseShippingFor(subtotal, customerCountry) + perItemShipping;
-  }
-  let shippingDiscountCents = 0;
-  if (shippingCode) {
-    const sd = db.prepare('SELECT * FROM discounts WHERE code=?').get(shippingCode);
-    if (sd && !sd.disabledAt && (!sd.expiresAt || new Date(sd.expiresAt).getTime() > Date.now()) && (sd.type === 'ship' || (/SHIP/i.test(sd.code || '') && sd.type === 'percent' && sd.value === 100))) {
-      if (!discountCode || discountCode !== shippingCode) {
-        if (subtotal >= sd.minSubtotalCents) {
-          const pct = Math.min(100, Math.max(0, sd.value));
-          shippingDiscountCents = Math.min(shippingCents, Math.floor(shippingCents * (pct / 100)));
-        }
-      }
-    }
-  }
-  const netShipping = Math.max(0, shippingCents - shippingDiscountCents);
-  const totalCents = subtotal - discountCents + netShipping;
-  const orderId = uuid();
-  const nowIso = new Date().toISOString();
-  const etaDays = netShipping === 0 ? 2 : 5;
-  const estimatedDeliveryAt = new Date(Date.now() + etaDays * 24 * 60 * 60 * 1000).toISOString();
-  try {
-    const insertOrder = db.prepare(`INSERT INTO orders(id,cartId,status,subtotalCents,discountCents,totalCents,shippingCents,shippingDiscountCents,customerName,customerEmail,customerAddress,shippingCountry,discountCode,shippingCode,estimatedDeliveryAt,paymentProvider,createdAt)
-      VALUES(@id,NULL,@status,@sub,@disc,@total,@ship,@shipDisc,@name,@email,@addr,@country,@discountCode,@shipCode,@eta,@provider,@created)`);
-    insertOrder.run({
-      id: orderId,
-      status: 'pending_payment',
-      sub: subtotal,
-      disc: discountCents,
-      total: totalCents,
-      ship: shippingCents,
-      shipDisc: shippingDiscountCents,
-      name: customer?.name || null,
-      email: customer?.email || null,
-      addr: customer?.address || null,
-      country: customerCountry,
-      discountCode: discountCode || null,
-      shipCode: shippingCode || null,
-      eta: estimatedDeliveryAt,
-      provider: 'stripe',
-      created: nowIso
-    });
-    db.prepare('INSERT INTO order_events(id,orderId,status,at) VALUES(?,?,?,?)').run(uuidv4(), orderId, 'pending_payment', nowIso);
-    const insertItem = db.prepare('INSERT INTO order_items(id,orderId,productId,variantId,titleSnapshot,quantity,unitPriceCents) VALUES(?,?,?,?,?,?,?)');
-    for (const line of normalized) {
-      insertItem.run(uuid(), orderId, line.productId, line.variantId, line.title, line.quantity, line.unitPriceCents);
-    }
-    let couponId = null;
-    if (discountCents > 0) {
-      const coupon = await stripe.coupons.create({ amount_off: discountCents, currency: 'usd', duration: 'once', name: discountCode ? `Discount ${discountCode}` : 'Order Discount' });
-      couponId = coupon.id;
-    }
-    const lineItems = normalized.map(line => ({
-      price_data: {
-        currency: 'usd',
-        unit_amount: line.unitPriceCents,
-        product_data: { name: line.title.slice(0, 120) }
-      },
-      quantity: line.quantity
-    }));
-    if (netShipping > 0) {
-      lineItems.push({
-        price_data: {
-          currency: 'usd',
-          unit_amount: netShipping,
-          product_data: { name: 'Shipping' }
-        },
-        quantity: 1
-      });
-    }
-    const baseUrl = (PUBLIC_URL || '').replace(/\/$/, '');
-    const session = await stripe.checkout.sessions.create({
-      mode: 'payment',
-      customer_email: customer?.email || undefined,
-      payment_method_types: ['card'],
-      line_items: lineItems,
-      discounts: couponId ? [{ coupon: couponId }] : undefined,
-      success_url: `${baseUrl || 'http://localhost:' + PORT}/?checkout=success&orderId=${orderId}&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${baseUrl || 'http://localhost:' + PORT}/?checkout=cancelled&orderId=${orderId}`,
-      metadata: {
-        orderId,
-        discountCode: discountCode || '',
-        shippingCode: shippingCode || ''
-      }
-    });
-    db.prepare('UPDATE orders SET stripeSessionId=? WHERE id=?').run(session.id, orderId);
-    res.json({ sessionId: session.id, orderId, publishableKey: STRIPE_PUBLISHABLE });
-  } catch (err) {
-    console.error('[stripe] session creation failed', err);
-    try {
-      db.prepare('DELETE FROM order_items WHERE orderId=?').run(orderId);
-      db.prepare('DELETE FROM order_events WHERE orderId=?').run(orderId);
-      db.prepare('DELETE FROM orders WHERE id=?').run(orderId);
-    } catch { }
-    res.status(500).json({ error: 'Stripe session failed: ' + err.message });
-  }
 });
 
 // ---------- Order Endpoints ----------
@@ -2198,8 +2348,13 @@ app.get('/api/orders/:id/events', requireAdmin, (req, res) => {
 
 // -------- Public order tracking (no admin token) --------
 app.get('/api/orders/:id/track', (req, res) => {
-  const row = db.prepare('SELECT id,status,createdAt,paidAt,fulfilledAt,shippedAt,cancelledAt,estimatedDeliveryAt,subtotalCents,discountCents,totalCents,shippingCents,shippingDiscountCents,customerName,completedAt,returnRequestedAt,returnReason FROM orders WHERE id=?').get(req.params.id);
+  const row = db.prepare('SELECT id,status,createdAt,paidAt,fulfilledAt,shippedAt,cancelledAt,estimatedDeliveryAt,subtotalCents,discountCents,totalCents,shippingCents,shippingDiscountCents,customerName,customerEmail,completedAt,returnRequestedAt,returnReason FROM orders WHERE id=?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Not found' });
+  const session = getCustomerSession(req);
+  const sessionEmail = session?.user?.email?.trim().toLowerCase();
+  const orderEmail = (row.customerEmail || '').trim().toLowerCase();
+  if (!sessionEmail) return res.status(401).json({ error: 'Login required' });
+  if (!orderEmail || sessionEmail !== orderEmail) return res.status(403).json({ error: 'Unauthorized' });
   const events = db.prepare('SELECT status, at FROM order_events WHERE orderId=? ORDER BY at ASC').all(req.params.id);
   const items = db.prepare('SELECT productId, variantId, titleSnapshot, quantity, unitPriceCents FROM order_items WHERE orderId=?').all(req.params.id);
   res.json({ order: row, items, events });
@@ -2207,11 +2362,13 @@ app.get('/api/orders/:id/track', (req, res) => {
 
 // Customer-initiated cancel (requires email match, only before shipped)
 app.post('/api/orders/:id/cancel-customer', (req, res) => {
-  const { email } = req.body || {};
-  if (!email) return res.status(400).json({ error: 'email required' });
   const order = db.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
-  if ((order.customerEmail || '').toLowerCase() !== String(email).toLowerCase()) return res.status(403).json({ error: 'email mismatch' });
+  const session = getCustomerSession(req);
+  const sessionEmail = session?.user?.email?.trim().toLowerCase();
+  const orderEmail = (order.customerEmail || '').trim().toLowerCase();
+  if (!sessionEmail) return res.status(401).json({ error: 'Login required' });
+  if (!orderEmail || sessionEmail !== orderEmail) return res.status(403).json({ error: 'Unauthorized' });
   if (order.cancelledAt) return res.status(400).json({ error: 'Already cancelled' });
   if (order.shippedAt) return res.status(400).json({ error: 'Already shipped' });
   const now = new Date().toISOString();
@@ -2223,11 +2380,13 @@ app.post('/api/orders/:id/cancel-customer', (req, res) => {
 
 // Customer marks order as received (complete)
 app.post('/api/orders/:id/complete', (req, res) => {
-  const { email } = req.body || {};
-  if (!email) return res.status(400).json({ error: 'email required' });
   const order = db.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
-  if ((order.customerEmail || '').toLowerCase() !== String(email).toLowerCase()) return res.status(403).json({ error: 'email mismatch' });
+  const session = getCustomerSession(req);
+  const sessionEmail = session?.user?.email?.trim().toLowerCase();
+  const orderEmail = (order.customerEmail || '').trim().toLowerCase();
+  if (!sessionEmail) return res.status(401).json({ error: 'Login required' });
+  if (!orderEmail || sessionEmail !== orderEmail) return res.status(403).json({ error: 'Unauthorized' });
   if (order.cancelledAt) return res.status(400).json({ error: 'Order cancelled' });
   if (!order.shippedAt) return res.status(400).json({ error: 'Order not shipped yet' });
   if (order.completedAt) return res.status(400).json({ error: 'Already completed' });
@@ -2239,12 +2398,9 @@ app.post('/api/orders/:id/complete', (req, res) => {
 });
 
 // Customer marks order as paid (pay-customer) - allows moving from created -> paid without admin token
-app.post('/api/orders/:id/pay-customer', (req, res) => {
-  const { email } = req.body || {};
-  if (!email) return res.status(400).json({ error: 'email required' });
+app.post('/api/orders/:id/pay-customer', requireAdmin, (req, res) => {
   const order = db.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
-  if ((order.customerEmail || '').toLowerCase() !== String(email).toLowerCase()) return res.status(403).json({ error: 'email mismatch' });
   if (order.cancelledAt) return res.status(400).json({ error: 'Order cancelled' });
   if (order.paidAt) return res.status(400).json({ error: 'Already paid' });
   const now = new Date().toISOString();
@@ -2256,11 +2412,14 @@ app.post('/api/orders/:id/pay-customer', (req, res) => {
 
 // Customer requests return / refund
 app.post('/api/orders/:id/return-request', (req, res) => {
-  const { email, reason = '' } = req.body || {};
-  if (!email) return res.status(400).json({ error: 'email required' });
+  const { reason = '' } = req.body || {};
   const order = db.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Not found' });
-  if ((order.customerEmail || '').toLowerCase() !== String(email).toLowerCase()) return res.status(403).json({ error: 'email mismatch' });
+  const session = getCustomerSession(req);
+  const sessionEmail = session?.user?.email?.trim().toLowerCase();
+  const orderEmail = (order.customerEmail || '').trim().toLowerCase();
+  if (!sessionEmail) return res.status(401).json({ error: 'Login required' });
+  if (!orderEmail || sessionEmail !== orderEmail) return res.status(403).json({ error: 'Unauthorized' });
   if (order.cancelledAt) return res.status(400).json({ error: 'Order cancelled' });
   if (!order.shippedAt) return res.status(400).json({ error: 'Not shipped yet' });
   if (order.returnRequestedAt) return res.status(400).json({ error: 'Return already requested' });
@@ -2397,26 +2556,50 @@ app.post('/api/admin/login', async (req, res) => {
     const attemptEntry = getAdminAttemptEntry(throttleKey);
     if (attemptEntry.lockedUntil && attemptEntry.lockedUntil > Date.now()) {
       const retrySeconds = Math.ceil((attemptEntry.lockedUntil - Date.now()) / 1000);
+      auditAuthEvent(req, email, 'admin-login-locked', { retryAfterSeconds: retrySeconds });
       return res.status(429).json({ error: `Too many attempts. Try again in ${retrySeconds} seconds.` });
     }
     const userRow = selectUserByEmailStmt.get(email);
     if (!userRow || (userRow.role || '').toLowerCase() !== 'admin') {
       recordAdminLoginFailure(attemptEntry);
+      auditAuthEvent(req, email, 'admin-login-failed', { reason: 'invalid-credentials' });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
     const ok = await comparePassword(passwordValue, userRow.passwordHash || '');
     if (!ok) {
       recordAdminLoginFailure(attemptEntry);
+      auditAuthEvent(req, email, 'admin-login-failed', { reason: 'invalid-credentials' });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
     clearAdminLoginAttempts(throttleKey);
     const payload = { ...sanitizeUserRow(userRow), role: 'admin' };
     const session = issueAdminSession({ userId: userRow.id, email: userRow.email }, req);
-    res.json({ token: session.token, expiresAt: session.expiresAt, user: payload });
+    auditAuthEvent(req, email, 'admin-login-success');
+    res.cookie(ADMIN_SESSION_COOKIE_NAME, session.token, {
+      httpOnly: true,
+      secure: SESSION_COOKIE_SECURE,
+      sameSite: SESSION_COOKIE_SAMESITE,
+      maxAge: ADMIN_SESSION_TTL_MS
+    });
+    res.json({ expiresAt: session.expiresAt, user: payload });
   } catch (err) {
     console.error('[admin] login failed', err);
     res.status(500).json({ error: 'Unable to login' });
   }
+});
+
+app.post('/api/admin/logout', requireAdmin, (req, res) => {
+  const session = req.adminSession || null;
+  if (session && session.source !== 'static' && session.token) {
+    revokeAdminSession(session.token);
+  }
+  auditAuthEvent(req, session?.email || null, 'admin-logout');
+  res.clearCookie(ADMIN_SESSION_COOKIE_NAME, {
+    httpOnly: true,
+    secure: SESSION_COOKIE_SECURE,
+    sameSite: SESSION_COOKIE_SAMESITE
+  });
+  res.status(204).end();
 });
 
 // ---------- Review Moderation (Admin) ----------
@@ -2718,24 +2901,34 @@ app.get('/api/meta', (_req, res) => {
   try {
     const pCount = db.prepare('SELECT COUNT(*) as c FROM products').get().c;
     const oCount = db.prepare('SELECT COUNT(*) as c FROM orders').get().c;
-    res.json({ productCount: pCount, orderCount: oCount, serverTime: new Date().toISOString(), version: '1.0.0', stripePublishableKey: STRIPE_PUBLISHABLE || null });
+    res.json({ productCount: pCount, orderCount: oCount, serverTime: new Date().toISOString(), version: '1.0.0' });
   } catch { res.status(500).json({ error: 'meta unavailable' }); }
 });
 
 // Metrics endpoint
 app.get('/api/metrics', requireAdmin, (req, res) => {
+  if (NODE_ENV === 'production') return res.status(404).json({ error: 'Not found' });
   res.json({
     uptimeSeconds: Math.round((Date.now() - metrics.startTime) / 1000),
     ...metrics
   });
 });
 
-app.post('/api/upload/image', requireAdmin, upload.single('image'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' });
-  res.status(201).json({ url: '/uploads/' + req.file.filename });
+app.post('/api/upload/image', requireAdmin, (req, res) => {
+  upload.single('image')(req, res, async (err) => {
+    if (err) return res.status(400).json({ error: err.message || 'Upload failed' });
+    if (!req.file) return res.status(400).json({ error: 'No file' });
+    try {
+      const filename = await storeSanitizedImage(req.file);
+      res.status(201).json({ url: '/uploads/' + filename });
+    } catch (storeErr) {
+      res.status(400).json({ error: storeErr.message || 'Upload failed' });
+    }
+  });
 });
 
-app.get('/api/debug/admin-status', (req, res) => {
+app.get('/api/debug/admin-status', requireAdmin, (req, res) => {
+  if (NODE_ENV === 'production') return res.status(404).json({ error: 'Not found' });
   const provided = req.header('X-Admin-Token');
   const admin = isAdmin(req);
   const session = req.adminSession;
@@ -2743,7 +2936,7 @@ app.get('/api/debug/admin-status', (req, res) => {
     isAdmin: admin,
     providedPresent: !!provided,
     providedPreview: provided ? provided.slice(0, 4) + '...' : null,
-    staticTokenPreview: ADMIN_TOKEN ? ADMIN_TOKEN.slice(0, 4) + '...' : null,
+    staticTokenPreview: ADMIN_TOKEN_ENABLED ? (ADMIN_TOKEN ? ADMIN_TOKEN.slice(0, 4) + '...' : null) : null,
     activeSession: session ? {
       source: session.source || 'session',
       tokenPreview: session.token ? session.token.slice(0, 6) + '...' : null,
@@ -2810,7 +3003,6 @@ app.get('/api/admin/verify', requireAdmin, (req, res) => {
   res.json({
     ok: true,
     serverTime: new Date().toISOString(),
-    token: session?.token || null,
     expiresAt: typeof session?.expiresAt === 'number' ? new Date(session.expiresAt).toISOString() : session?.expiresAt || null,
     user: session && session.email ? { email: session.email, role: 'admin' } : null
   });
@@ -2818,6 +3010,7 @@ app.get('/api/admin/verify', requireAdmin, (req, res) => {
 
 // Admin: replace all products with curated seed set of 10 tees
 app.post('/api/admin/seed-products', requireAdmin, (req, res) => {
+  if (NODE_ENV === 'production') return res.status(404).json({ error: 'Not found' });
   try {
     const now = new Date().toISOString();
     const del = db.prepare('DELETE FROM products');
@@ -2864,6 +3057,7 @@ app.post('/api/admin/seed-products', requireAdmin, (req, res) => {
 
 // Admin: diversified seed (tees, hoodies, caps, etc.) with multiple images & refined tags
 app.post('/api/admin/seed-diverse', requireAdmin, (req, res) => {
+  if (NODE_ENV === 'production') return res.status(404).json({ error: 'Not found' });
   try {
     const now = new Date().toISOString();
     db.prepare('DELETE FROM products').run();
@@ -2912,7 +3106,6 @@ app.use((err, _req, res, _next) => { console.error(err); res.status(500).json({ 
 app.listen(PORT, () => {
   console.log('='.repeat(60));
   console.log(`Server running http://localhost:${PORT}`);
-  console.log('Admin token first 4:', ADMIN_TOKEN.slice(0, 4) + '...');
   console.log('Endpoints ready.');
   console.log('='.repeat(60));
 });

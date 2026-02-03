@@ -10,7 +10,7 @@ import { loadProducts, sanitizeCart, updateCartBadge } from './api/index.js';
 import { verifyCustomerSession, mountCustomerHeaderControls } from './auth/customer.js';
 import { initRouter, renderCurrentRoute, parseCurrentUrl, navigate } from './router/index.js';
 import { updateFavoritesBadge } from './components/cart-favorites.js';
-import { maybeHandleStripeReturn } from './pages/checkout.js';
+import { maybeHandlePayMongoReturn } from './pages/checkout.js';
 import { verifyAdminToken, mountAdminHeaderControls } from './auth/admin.js';
 import { showSpinner, notify } from './utils/helpers.js';
 import { initCurrency } from './utils/currency.js';
@@ -63,14 +63,9 @@ async function initApp() {
         updateCartBadge();
         updateFavoritesBadge();
         
-        // Check for Stripe return
         const { route, params } = parseCurrentUrl();
         console.log('[App] Current route:', route, 'params:', params);
-        if (params.session_id) {
-            // Handle Stripe checkout return
-            console.log('[App] Handling Stripe return...');
-            await maybeHandleStripeReturn();
-        }
+        await maybeHandlePayMongoReturn();
         
         // Render current route
         console.log('[App] Rendering current route...');

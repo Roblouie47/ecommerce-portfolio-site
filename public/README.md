@@ -54,7 +54,7 @@ ADMIN_TOKEN=mysecret node server.js
 
 - Real database (MongoDB/PostgreSQL)
 - Authenticated customers & order history
-- Payment integration (Stripe)
+- Payment integration (PayMongo)
 - Pagination, sorting
 - Image uploads
 - Rate limiting & logging

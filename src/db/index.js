@@ -73,8 +73,6 @@ CREATE TABLE IF NOT EXISTS orders (
   returnAdminRespondedAt TEXT,
   returnUsageNotes TEXT,
   returnClosedAt TEXT,
-  stripeSessionId TEXT,
-  stripePaymentIntentId TEXT,
   paymongoIntentId TEXT,
   paymongoPaymentId TEXT,
   paymongoClientKey TEXT,
@@ -211,8 +209,6 @@ try {
   if (need('returnAdminRespondedAt')) db.exec('ALTER TABLE orders ADD COLUMN returnAdminRespondedAt TEXT');
   if (need('returnUsageNotes')) db.exec('ALTER TABLE orders ADD COLUMN returnUsageNotes TEXT');
   if (need('returnClosedAt')) db.exec('ALTER TABLE orders ADD COLUMN returnClosedAt TEXT');
-  if (need('stripeSessionId')) db.exec('ALTER TABLE orders ADD COLUMN stripeSessionId TEXT');
-  if (need('stripePaymentIntentId')) db.exec('ALTER TABLE orders ADD COLUMN stripePaymentIntentId TEXT');
   if (need('paymongoIntentId')) db.exec('ALTER TABLE orders ADD COLUMN paymongoIntentId TEXT');
   if (need('paymongoPaymentId')) db.exec('ALTER TABLE orders ADD COLUMN paymongoPaymentId TEXT');
   if (need('paymongoClientKey')) db.exec('ALTER TABLE orders ADD COLUMN paymongoClientKey TEXT');

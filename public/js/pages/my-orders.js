@@ -44,7 +44,7 @@ export function renderMyOrders() {
     rootEl.innerHTML = '';
 
     const sessionUser = state.customer;
-    const signedIn = !!(sessionUser && sessionUser.sessionToken && sessionUser.email);
+    const signedIn = !!(sessionUser && sessionUser.hasSession && sessionUser.email);
     let activeTab = 'all';
     let searchQuery = '';
 
@@ -860,7 +860,8 @@ export function renderMyOrders() {
                 const data = await apiFetch(`/api/orders/${orderId}/refund-messages`);
                 store.set(orderId, { messages: data.messages || [] });
             } catch (err) {
-                container.innerHTML = `<p class="tiny alert">Unable to load conversation: ${err.message}</p>`;
+                container.innerHTML = '';
+                container.appendChild(el('p', { class: 'tiny alert' }, `Unable to load conversation: ${err?.message || 'Unknown error'}`));
                 console.warn('[refund-thread] customer load failed for', orderId, err);
                 return;
             }

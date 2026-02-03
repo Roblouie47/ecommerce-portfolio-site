@@ -20,11 +20,9 @@ services:
         sync: false
       - key: ADMIN_PASSWORD
         sync: false
-      - key: STRIPE_SECRET
+      - key: PAYMONGO_SECRET_KEY
         sync: false
-      - key: STRIPE_PUBLISHABLE
-        sync: false
-      - key: STRIPE_WEBHOOK_SECRET
+      - key: PAYMONGO_WEBHOOK_SECRET
         sync: false
       - key: SMTP_HOST
         sync: false

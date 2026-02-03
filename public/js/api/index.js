@@ -21,21 +21,14 @@ import { notify } from '../utils/helpers.js';
  */
 export async function apiFetch(url, options = {}) {
     const headers = { ...options.headers };
-    
-    // Add admin token if available
-        if (state.admin.token && !headers['X-Admin-Token']) {
-        headers['X-Admin-Token'] = state.admin.token;
+    if (!headers.Authorization && !headers.authorization && state?.customer?.sessionToken) {
+        headers.Authorization = `Bearer ${state.customer.sessionToken}`;
     }
     
-    // Add customer token if available
-    if (state.customer?.sessionToken) {
-        headers['Authorization'] = `Bearer ${state.customer.sessionToken}`;
-    }
-    
-    const response = await fetch(url, { ...options, headers });
+    const response = await fetch(url, { ...options, headers, credentials: 'include' });
     
     if (!response.ok) {
-            if (response.status === 401 && state.admin.token) {
+            if (response.status === 401 && state.admin.user) {
                 notify('Admin session expired. Please sign in again.', 'warn', 4000);
                 clearAdminAuth();
             }
@@ -47,7 +40,10 @@ export async function apiFetch(url, options = {}) {
         throw error;
     }
     
-    return response.json();
+    if (response.status === 204) return null;
+    const text = await response.text();
+    if (!text) return null;
+    return JSON.parse(text);
 }
 
 // ============================================
@@ -481,32 +477,6 @@ export async function loadPromoAnalytics(days = 30) {
 export async function loadLowStock(threshold = 5) {
     const data = await apiFetch(`/api/products/low-stock?threshold=${threshold}`);
     state.admin.lowStock = Array.isArray(data) ? data : (data.products || []);
-}
-
-// ============================================
-// Checkout API
-// ============================================
-
-/**
- * Creates a Stripe checkout session
- * @param {Object} payload - Checkout data
- * @returns {Promise<Object>}
- */
-export async function createCheckoutSession(payload) {
-    return apiFetch('/api/checkout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    });
-}
-
-/**
- * Retrieves checkout session details
- * @param {string} sessionId - Stripe session ID
- * @returns {Promise<Object>}
- */
-export async function getCheckoutSession(sessionId) {
-    return apiFetch(`/api/checkout/session/${sessionId}`);
 }
 
 // ============================================

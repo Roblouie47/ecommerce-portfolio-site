@@ -22,7 +22,7 @@ export function normalizeAdminProfile(profile) {
  * Updates admin navigation visibility based on auth state
  */
 export function updateAdminNavVisibility() {
-    const visible = !!(state.admin.token && state.admin.user);
+    const visible = !!state.admin.user;
     try {
         document.querySelectorAll('[data-route="admin"]').forEach(link => {
             /** @type {HTMLElement} */ (link).style.display = visible ? '' : 'none';
@@ -44,7 +44,7 @@ function scheduleAdminTokenExpiryCheck() {
         clearTimeout(expiryTimer);
         expiryTimer = null;
     }
-    if (!state.admin.token || !state.admin.expiresAt) return;
+    if (!state.admin.expiresAt) return;
     const expiresAtMs = Date.parse(state.admin.expiresAt);
     if (Number.isNaN(expiresAtMs)) return;
     const delay = Math.max(0, expiresAtMs - Date.now());
@@ -58,15 +58,11 @@ function scheduleAdminTokenExpiryCheck() {
 setTimeout(() => scheduleAdminTokenExpiryCheck(), 0);
 
 export function setAdminAuth(auth) {
-    const token = auth && typeof auth.token === 'string' ? auth.token : '';
     const profile = normalizeAdminProfile(auth?.user);
     const expiresAt = auth && typeof auth.expiresAt === 'string' ? auth.expiresAt : null;
-    state.admin.token = token;
     state.admin.user = profile;
     state.admin.expiresAt = expiresAt;
     try {
-        if (token) localStorage.setItem('adminToken', token);
-        else localStorage.removeItem('adminToken');
         if (profile) localStorage.setItem('adminProfile', JSON.stringify(profile));
         else localStorage.removeItem('adminProfile');
         if (expiresAt) localStorage.setItem('adminTokenExpiresAt', expiresAt);
@@ -112,7 +108,7 @@ export function clearAdminAuth(notifyUser = false) {
  * @returns {Promise<boolean>}
  */
 export async function verifyAdminToken() {
-    if (!state.admin.token) return false;
+    if (!state.admin.user) return false;
     if (state.admin.expiresAt) {
         const expiresAtMs = Date.parse(state.admin.expiresAt);
         if (!Number.isNaN(expiresAtMs) && expiresAtMs <= Date.now()) {
@@ -153,8 +149,8 @@ export async function adminLoginRequest(email, password) {
         body: JSON.stringify({ email, password })
     });
     
-    if (data.token) {
-        setAdminAuth({ token: data.token, user: data.user, expiresAt: data.expiresAt });
+    if (data.user) {
+        setAdminAuth({ user: data.user, expiresAt: data.expiresAt });
     }
     
     return data;
@@ -175,7 +171,7 @@ export function mountAdminHeaderControls() {
         else actions.appendChild(container);
     }
     container.innerHTML = '';
-    const isAuthed = !!(state.admin.token && state.admin.user);
+    const isAuthed = !!state.admin.user;
     if (isAuthed) {
         const name = (state.admin.user?.name || state.admin.user?.email || 'Admin').trim();
         const signOutBtn = el('button', { class: 'admin-auth-btn', attrs: { type: 'button', id: 'admin-header-signout' } }, 'Sign Out');

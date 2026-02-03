@@ -8,5 +8,4 @@ Thumbs.db
 .vscode/
 .idea/
 paymongo.js
-env.js
 .scripts/

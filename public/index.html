@@ -58,18 +58,9 @@
     <!-- Spinner overlay root -->
     <div id="spinner-root" class="spinner-root hidden" aria-hidden="true"></div>
 
-    <script src="https://js.stripe.com/v3"></script>
     <!-- Modular ES modules entry point -->
     <script type="module" src="/js/app.js"></script>
-    <script src="/js/disable-verification.js"></script>
-    <script>
-        // Remove legacy service workers so pages always load the latest bundle
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.getRegistrations?.().then((regs) => regs.forEach((reg) => reg.unregister())).catch(() => { });
-        }
-        // Year
-        document.addEventListener('DOMContentLoaded', () => { const y = document.getElementById('year'); if (y) y.textContent = new Date().getFullYear(); });
-    </script>
+    <script src="/js/inline-init.js"></script>
 </body>
 
 </html>
