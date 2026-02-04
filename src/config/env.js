@@ -53,7 +53,7 @@ module.exports = {
     SESSION_COOKIE_SAMESITE: process.env.SESSION_COOKIE_SAMESITE || (NODE_ENV === 'production' ? 'strict' : 'lax'),
     TRUST_PROXY: parseTrustProxy(process.env.TRUST_PROXY, false),
     CORS_ORIGINS: parseCsvList(process.env.CORS_ORIGINS),
-    PUBLIC_URL: process.env.PUBLIC_URL || 'https://ecommerce-backend-r4fb.onrender.com/',
+    PUBLIC_URL: process.env.PUBLIC_URL || 'https://ecommerce-backend-r4fb.onrender.com',
     SMTP_HOST: process.env.SMTP_HOST || '',
     SMTP_PORT: parseNumber(process.env.SMTP_PORT, 587),
     SMTP_USER: process.env.SMTP_USER || '',
