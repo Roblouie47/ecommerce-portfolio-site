@@ -39,7 +39,7 @@ const NODE_ENV = process.env.NODE_ENV || 'development';
 module.exports = {
     NODE_ENV,
     PORT: parseNumber(process.env.PORT, 3000),
-    ADMIN_TOKEN: process.env.ADMIN_TOKEN || '1408801338Rob12345',
+    ADMIN_TOKEN: process.env.ADMIN_TOKEN || 'changeme',
     ADMIN_TOKEN_ENABLED: parseBoolean(process.env.ADMIN_TOKEN_ENABLED, NODE_ENV !== 'production'),
     ADMIN_EMAIL: process.env.ADMIN_EMAIL || '',
     ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || '',
@@ -53,7 +53,7 @@ module.exports = {
     SESSION_COOKIE_SAMESITE: process.env.SESSION_COOKIE_SAMESITE || (NODE_ENV === 'production' ? 'strict' : 'lax'),
     TRUST_PROXY: parseTrustProxy(process.env.TRUST_PROXY, false),
     CORS_ORIGINS: parseCsvList(process.env.CORS_ORIGINS),
-    PUBLIC_URL: process.env.PUBLIC_URL || 'https://ecommerce-backend-r4fb.onrender.com' + (parseNumber(process.env.PORT, 3000)),
+    PUBLIC_URL: process.env.PUBLIC_URL || 'http://localhost:' + (parseNumber(process.env.PORT, 3000)),
     SMTP_HOST: process.env.SMTP_HOST || '',
     SMTP_PORT: parseNumber(process.env.SMTP_PORT, 587),
     SMTP_USER: process.env.SMTP_USER || '',
