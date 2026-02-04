@@ -229,6 +229,7 @@ if (SMTP_HOST && EMAIL_SENDER) {
   if (SMTP_USER) {
     transportConfig.auth = { user: SMTP_USER, pass: SMTP_PASS };
   }
+  console.log('[mail] configuring transport', transportConfig);
   mailTransport = nodemailer.createTransport(transportConfig);
   mailTransport.verify().then(() => {
     console.log('[mail] transport ready.');
