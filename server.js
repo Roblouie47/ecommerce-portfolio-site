@@ -235,7 +235,8 @@ if (SMTP_HOST && EMAIL_SENDER) {
     console.log('[mail] transport ready.');
   }).catch((err) => {
     mailTransport = null;
-    console.warn('[mail] transport verification failed:', err.message);
+    console.warn('[mail] transport verification failed:', err?.message || err);
+    console.warn('[mail] verification details:', err);
   });
 } else if (!EMAIL_DEV_MODE) {
   console.warn('[mail] Email transport not configured; verification emails disabled.');
