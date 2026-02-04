@@ -234,7 +234,6 @@ if (SMTP_HOST && EMAIL_SENDER) {
   mailTransport.verify().then(() => {
     console.log('[mail] transport ready.');
   }).catch((err) => {
-    mailTransport = null;
     console.warn('[mail] transport verification failed:', err?.message || err);
     console.warn('[mail] verification details:', err);
   });
