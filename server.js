@@ -25,7 +25,7 @@ const axios = require('axios');
 const nodemailer = require('nodemailer');
 const { v4: uuid } = require('uuid');
 const { NODE_ENV, PORT, ADMIN_TOKEN, ADMIN_TOKEN_ENABLED, ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME, PUBLIC_URL, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE, EMAIL_FROM, EMAIL_DEV_MODE, EMAIL_DEV_RECIPIENT, MAILBOXLAYER_API_KEY, MAILBOXLAYER_BASE_URL, MAILBOXLAYER_TIMEOUT_MS, MAILBOXLAYER_STRICT, CORS_ORIGINS, TRUST_PROXY, SESSION_COOKIE_NAME, SESSION_COOKIE_ONLY, SESSION_COOKIE_SECURE, SESSION_COOKIE_SAMESITE, SESSION_SECRET, JWT_SECRET } = require('./src/config/env');
-const { isAdmin, requireAdmin, issueAdminSession, revokeAdminSession, ADMIN_SESSION_COOKIE_NAME } = require('./src/middleware/admin');
+const { isAdmin, requireAdmin, issueAdminSession, revokeAdminSession, ADMIN_SESSION_COOKIE_NAME, ADMIN_CSRF_COOKIE_NAME } = require('./src/middleware/admin');
 const db = require('./src/db');
 const { parseJSONField, validateProductInput, validateVariant, buildProductRow, computeCartTotals, getReviewSummary, computeProductInventory } = require('./src/utils');
 const { v4: uuidv4 } = require('uuid');
@@ -229,7 +229,6 @@ if (SMTP_HOST && EMAIL_SENDER) {
   if (SMTP_USER) {
     transportConfig.auth = { user: SMTP_USER, pass: SMTP_PASS };
   }
-  console.log('[mail] configuring transport', transportConfig);
   mailTransport = nodemailer.createTransport(transportConfig);
   mailTransport.verify().then(() => {
     console.log('[mail] transport ready.');
@@ -392,7 +391,8 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'"],
-      styleSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      styleSrcAttr: ["'unsafe-inline'"],
       imgSrc: ["'self'", 'https:', 'data:'],
       connectSrc: ["'self'"],
       fontSrc: ["'self'", 'https:', 'data:'],
@@ -2582,10 +2582,17 @@ app.post('/api/admin/login', async (req, res) => {
       sameSite: SESSION_COOKIE_SAMESITE,
       maxAge: ADMIN_SESSION_TTL_MS
     });
-    res.json({ expiresAt: session.expiresAt, user: payload });
+    res.cookie(ADMIN_CSRF_COOKIE_NAME, session.csrfToken, {
+      httpOnly: false,
+      secure: SESSION_COOKIE_SECURE,
+      sameSite: SESSION_COOKIE_SAMESITE,
+      maxAge: ADMIN_SESSION_TTL_MS
+    });
+    res.json({ expiresAt: session.expiresAt, csrfToken: session.csrfToken, user: payload });
   } catch (err) {
     console.error('[admin] login failed', err);
-    res.status(500).json({ error: 'Unable to login' });
+    const detail = NODE_ENV === 'production' ? undefined : (err?.message || String(err));
+    res.status(500).json({ error: 'Unable to login', detail });
   }
 });
 
@@ -2597,6 +2604,11 @@ app.post('/api/admin/logout', requireAdmin, (req, res) => {
   auditAuthEvent(req, session?.email || null, 'admin-logout');
   res.clearCookie(ADMIN_SESSION_COOKIE_NAME, {
     httpOnly: true,
+    secure: SESSION_COOKIE_SECURE,
+    sameSite: SESSION_COOKIE_SAMESITE
+  });
+  res.clearCookie(ADMIN_CSRF_COOKIE_NAME, {
+    httpOnly: false,
     secure: SESSION_COOKIE_SECURE,
     sameSite: SESSION_COOKIE_SAMESITE
   });

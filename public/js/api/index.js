@@ -14,6 +14,23 @@ import { clearAdminAuth } from '../auth/admin.js';
 import { notify } from '../utils/helpers.js';
 
 /**
+ * Reads a cookie value by name
+ * @param {string} name
+ * @returns {string}
+ */
+function getCookieValue(name) {
+    if (typeof document === 'undefined') return '';
+    const raw = document.cookie || '';
+    if (!raw) return '';
+    const parts = raw.split(';');
+    for (const part of parts) {
+        const [key, ...rest] = part.trim().split('=');
+        if (key === name) return decodeURIComponent(rest.join('='));
+    }
+    return '';
+}
+
+/**
  * Base API fetch wrapper with authentication
  * @param {string} url - API endpoint URL
  * @param {Object} options - Fetch options
@@ -23,6 +40,13 @@ export async function apiFetch(url, options = {}) {
     const headers = { ...options.headers };
     if (!headers.Authorization && !headers.authorization && state?.customer?.sessionToken) {
         headers.Authorization = `Bearer ${state.customer.sessionToken}`;
+    }
+    const method = (options.method || 'GET').toUpperCase();
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && state?.admin?.user) {
+        const csrfToken = getCookieValue('admin_csrf');
+        if (csrfToken && !headers['X-CSRF-Token']) {
+            headers['X-CSRF-Token'] = csrfToken;
+        }
     }
     
     const response = await fetch(url, { ...options, headers, credentials: 'include' });

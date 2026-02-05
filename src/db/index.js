@@ -122,6 +122,16 @@ CREATE TABLE IF NOT EXISTS sessions (
   createdAt TEXT NOT NULL,
   expiresAt TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS admin_sessions (
+  id TEXT PRIMARY KEY,
+  userId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token TEXT NOT NULL UNIQUE,
+  csrfToken TEXT NOT NULL,
+  createdAt TEXT NOT NULL,
+  expiresAt TEXT NOT NULL,
+  ip TEXT,
+  userAgent TEXT
+);
 CREATE TABLE IF NOT EXISTS addresses (
   id TEXT PRIMARY KEY,
   userId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -186,6 +196,49 @@ try {
   }
 } catch (e) {
   console.warn('Migration check failed', e.message);
+}
+
+// Users table migration (role + profile fields)
+try {
+  const ucols = /** @type {Array<{name: string}>} */ (db.prepare('PRAGMA table_info(users)').all());
+  const need = (name) => !ucols.some(c => c.name === name);
+  if (need('role')) db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'customer'");
+  if (need('avatarUrl')) db.exec('ALTER TABLE users ADD COLUMN avatarUrl TEXT');
+  if (need('country')) db.exec('ALTER TABLE users ADD COLUMN country TEXT');
+  if (need('address')) db.exec('ALTER TABLE users ADD COLUMN address TEXT');
+} catch (e) {
+  console.warn('Users migration failed', e.message);
+}
+
+// Admin sessions table migration
+try {
+  const acols = /** @type {Array<{name: string}>} */ (db.prepare('PRAGMA table_info(admin_sessions)').all());
+  const need = (name) => !acols.some(c => c.name === name);
+  if (need('csrfToken')) db.exec('ALTER TABLE admin_sessions ADD COLUMN csrfToken TEXT');
+  if (need('ip')) db.exec('ALTER TABLE admin_sessions ADD COLUMN ip TEXT');
+  if (need('userAgent')) db.exec('ALTER TABLE admin_sessions ADD COLUMN userAgent TEXT');
+} catch (e) {
+  console.warn('Admin sessions migration failed', e.message);
+}
+
+// Admin sessions foreign key fix (legacy tables may reference admin_users)
+try {
+  const fks = /** @type {Array<{table: string}>} */ (db.prepare('PRAGMA foreign_key_list(admin_sessions)').all());
+  if (fks.some(fk => fk.table === 'admin_users')) {
+    db.exec('DROP TABLE IF EXISTS admin_sessions');
+    db.exec(`CREATE TABLE IF NOT EXISTS admin_sessions (
+      id TEXT PRIMARY KEY,
+      userId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token TEXT NOT NULL UNIQUE,
+      csrfToken TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      expiresAt TEXT NOT NULL,
+      ip TEXT,
+      userAgent TEXT
+    );`);
+  }
+} catch (e) {
+  console.warn('Admin sessions foreign key migration failed', e.message);
 }
 
 // Order status columns migration
