@@ -566,13 +566,23 @@ export function showCheckoutModal() {
                     const now = Date.now();
                     const expired = d.expiresAt && new Date(d.expiresAt).getTime() <= now;
                     // Skip shipping-only discounts in item code field
-                    if (d.type === 'ship' || (/SHIP/i.test(d.code || '') && d.value === 100)) { renderBreakdown(); return; }
-                    if (!expired && estSubtotal >= d.minSubtotalCents) {
+                    if (d.type === 'ship' || (/SHIP/i.test(d.code || '') && d.value === 100)) {
+                        notify('That code is for shipping discounts. Use the shipping field.', 'warn', 3500);
+                        renderBreakdown();
+                        return;
+                    }
+                    if (expired) {
+                        notify('That discount has expired.', 'warn', 3500);
+                    } else if (estSubtotal < d.minSubtotalCents) {
+                        notify(`Minimum subtotal is ${money(d.minSubtotalCents || 0)}.`, 'warn', 3500);
+                    } else {
                         if (d.type === 'percent') estDiscount = Math.floor(estSubtotal * (d.value / 100));
                         else if (d.type === 'fixed') estDiscount = Math.min(estSubtotal, d.value);
                         if (estDiscount > 0) discountApplied = true;
                     }
-                } catch { }
+                } catch {
+                    notify('Discount code not found or disabled.', 'warn', 3500);
+                }
                 styleApply(dcApplyBtn, discountApplied && estDiscount > 0);
                 renderBreakdown();
             }
@@ -589,13 +599,25 @@ export function showCheckoutModal() {
                     const expired = d.expiresAt && new Date(d.expiresAt).getTime() <= now;
                     const qualifies = !expired && estShipping > 0 && estSubtotal >= d.minSubtotalCents;
                     const isShipStyle = d.type === 'ship' || (/SHIP/i.test(d.code || '') && d.type === 'percent' && d.value === 100);
-                    if (qualifies && isShipStyle) {
+                    if (expired) {
+                        notify('That shipping discount has expired.', 'warn', 3500);
+                    } else if (!isShipStyle) {
+                        notify('That code is for item discounts. Use the item field.', 'warn', 3500);
+                    } else if (!qualifies) {
+                        notify(`Minimum subtotal is ${money(d.minSubtotalCents || 0)}.`, 'warn', 3500);
+                    } else {
                         if (dcInput.value.trim().toUpperCase() !== code.toUpperCase()) {
-                            estShipDiscount = Math.min(estShipping, Math.floor(estShipping * (d.value / 100)));
+                            if (d.type === 'ship') {
+                                estShipDiscount = Math.min(estShipping, d.value);
+                            } else {
+                                estShipDiscount = Math.min(estShipping, Math.floor(estShipping * (d.value / 100)));
+                            }
                             if (estShipDiscount > 0) shipDiscountApplied = true;
                         }
                     }
-                } catch { }
+                } catch {
+                    notify('Shipping code not found or disabled.', 'warn', 3500);
+                }
                 styleApply(shipApplyBtn, shipDiscountApplied && estShipDiscount > 0);
                 renderBreakdown();
             }

@@ -397,8 +397,12 @@ module.exports = function createPayMongoRouter(options = {}) {
 		if (shippingCode) {
 			const shipRow = selectDiscount.get(shippingCode);
 			if (shipRow && allowShippingDiscount(shipRow, subtotal, shippingCents, discountCode, shippingCode)) {
-				const pct = Math.min(100, Math.max(0, shipRow.value || 0));
-				shippingDiscountCents = Math.min(shippingCents, Math.floor(shippingCents * (pct / 100)));
+				if (shipRow.type === 'ship') {
+					shippingDiscountCents = Math.min(shippingCents, shipRow.value || 0);
+				} else {
+					const pct = Math.min(100, Math.max(0, shipRow.value || 0));
+					shippingDiscountCents = Math.min(shippingCents, Math.floor(shippingCents * (pct / 100)));
+				}
 			}
 		}
 

@@ -658,8 +658,19 @@ export function renderAdmin() {
         });
     }
 
+    if (state.admin.discountFilter === undefined) state.admin.discountFilter = 'all';
     const discountPanel = el('div', { class: 'panel mt-md', attrs: { 'data-admin-section': 'discounts' } },
-        el('div', { class: 'panel-header' }, el('span', {}, 'Discounts'), el('div', { class: 'inline-fields' }, el('button', { class: 'btn btn-small btn-outline', attrs: { id: 'new-discount-btn' } }, 'New'))),
+        el('div', { class: 'panel-header' },
+            el('span', {}, 'Discounts'),
+            el('div', { class: 'inline-fields' },
+                el('div', { class: 'admin-discount-filters' },
+                    el('button', { class: 'btn btn-small btn-outline', attrs: { id: 'discount-filter-all', type: 'button' } }, 'All'),
+                    el('button', { class: 'btn btn-small btn-outline', attrs: { id: 'discount-filter-enabled', type: 'button' } }, 'Enabled'),
+                    el('button', { class: 'btn btn-small btn-outline', attrs: { id: 'discount-filter-disabled', type: 'button' } }, 'Disabled')
+                ),
+                el('button', { class: 'btn btn-small btn-outline', attrs: { id: 'new-discount-btn' } }, 'New')
+            )
+        ),
         el('div', { class: 'admin-table-wrapper' }, el('table', { class: 'admin-table', attrs: { id: 'admin-discounts-table' } }))
     );
     rootEl.appendChild(discountPanel);
@@ -1968,10 +1979,26 @@ function refreshDiscountTable() {
     dt.innerHTML = '<thead><tr><th>Code</th><th>Type</th><th>Value</th><th>Min Subtotal</th><th>Expires</th><th>Usage</th><th>Status</th><th>Actions</th></tr></thead><tbody></tbody>';
     const tbody = dt.querySelector('tbody');
     const discounts = Array.isArray(state.admin.discounts) ? state.admin.discounts : [];
-    if (!discounts.length) {
-        tbody.appendChild(el('tr', {}, el('td', { attrs: { colspan: '8' } }, el('div', { class: 'muted small' }, 'No discounts configured'))));
+    const filter = state.admin.discountFilter || 'all';
+    const isDisabled = (d) => d.disabledAt != null && String(d.disabledAt).trim() !== '';
+    const filtered = discounts.filter(d => {
+        if (filter === 'enabled') return !isDisabled(d);
+        if (filter === 'disabled') return isDisabled(d);
+        return true;
+    });
+    const filterAllBtn = document.getElementById('discount-filter-all');
+    const filterEnabledBtn = document.getElementById('discount-filter-enabled');
+    const filterDisabledBtn = document.getElementById('discount-filter-disabled');
+    if (filterAllBtn) filterAllBtn.classList.toggle('active', filter === 'all');
+    if (filterEnabledBtn) filterEnabledBtn.classList.toggle('active', filter === 'enabled');
+    if (filterDisabledBtn) filterDisabledBtn.classList.toggle('active', filter === 'disabled');
+    if (!filtered.length) {
+        const emptyCopy = filter === 'all'
+            ? 'No discounts configured'
+            : `No ${filter} discounts to show`;
+        tbody.appendChild(el('tr', {}, el('td', { attrs: { colspan: '8' } }, el('div', { class: 'muted small' }, emptyCopy))));
     }
-    discounts.forEach(d => {
+    filtered.forEach(d => {
         const expired = d.expiresAt && new Date(d.expiresAt).getTime() <= Date.now();
         const actions = el('td', {});
         actions.appendChild(el('button', { class: 'btn btn-xs btn-outline', attrs: { 'data-edit-discount': d.code } }, 'Edit'));
@@ -2007,10 +2034,15 @@ function refreshDiscountTable() {
                 try { await apiFetch('/api/discounts/' + code + '/enable', { method: 'POST' }); notify('Enabled ' + code, 'success'); await loadDiscounts(); refreshDiscountTable(); } catch (err) { notify(err.message, 'error'); }
             } else if (editBtn) {
                 const code = editBtn.getAttribute('data-edit-discount');
-                const d = discounts.find(x => x.code === code);
+                const latest = Array.isArray(state.admin.discounts) ? state.admin.discounts : [];
+                const d = latest.find(x => x.code === code);
                 if (d) showDiscountModal(d);
+                else notify('Discount not found. Refresh the table and try again.', 'warn', 3000);
             }
         });
+        filterAllBtn?.addEventListener('click', () => { state.admin.discountFilter = 'all'; refreshDiscountTable(); });
+        filterEnabledBtn?.addEventListener('click', () => { state.admin.discountFilter = 'enabled'; refreshDiscountTable(); });
+        filterDisabledBtn?.addEventListener('click', () => { state.admin.discountFilter = 'disabled'; refreshDiscountTable(); });
         document.getElementById('new-discount-btn')?.addEventListener('click', () => showDiscountModal());
         document.getElementById('low-stock-refresh')?.addEventListener('click', async () => {
             await loadLowStock(parseInt(document.getElementById('low-stock-threshold')?.value, 10) || 5);
@@ -2212,7 +2244,7 @@ function showDiscountModal(existing = null) {
                 const sel = el('select', { attrs: { id: 'd-type' } },
                     el('option', { attrs: { value: 'percent' } }, 'percent (percentage off)'),
                     el('option', { attrs: { value: 'fixed' } }, 'fixed (cents off)'),
-                    el('option', { attrs: { value: 'ship' } }, 'ship (shipping % off)')
+                    el('option', { attrs: { value: 'ship' } }, 'ship (shipping cents off)')
                 );
                 field.appendChild(sel);
                 return field;
@@ -2220,7 +2252,7 @@ function showDiscountModal(existing = null) {
             fieldInput('Value', 'd-value', 'number'),
             fieldInput('Min Subtotal (cents)', 'd-min', 'number'),
             fieldInput('Expires (YYYY-MM-DD)', 'd-exp'),
-            el('div', { class: 'field small muted', attrs: { style: 'grid-column:1/-1;' } }, 'Percent: 1-100. Fixed: value in cents.'),
+            el('div', { class: 'field small muted', attrs: { style: 'grid-column:1/-1;' } }, 'Percent: 1-100. Fixed/Ship: value in cents.'),
             el('div', { class: 'field', attrs: { style: 'grid-column:1/-1;' } },
                 el('button', { class: 'btn btn-success', attrs: { type: 'submit' } }, existing ? 'Save Changes' : 'Create'),
                 ' ',
@@ -2261,7 +2293,7 @@ function showDiscountModal(existing = null) {
             if (!code) return showErr('Code required');
             if (!['percent', 'fixed', 'ship'].includes(type)) return showErr('Type must be percent, fixed, or ship');
             if (!Number.isInteger(value) || value <= 0) return showErr('Value must be positive integer');
-            if (type !== 'fixed' && (value < 1 || value > 100)) return showErr('Value must be 1-100 for percent/ship');
+            if (type === 'percent' && (value < 1 || value > 100)) return showErr('Value must be 1-100 for percent');
             if (expiresRaw) {
                 const parsed = Date.parse(expiresRaw);
                 if (Number.isNaN(parsed)) return showErr('Expires date invalid');

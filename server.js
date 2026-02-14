@@ -24,7 +24,7 @@ const crypto = require('crypto');
 const axios = require('axios');
 const nodemailer = require('nodemailer');
 const { v4: uuid } = require('uuid');
-const { NODE_ENV, PORT, ADMIN_TOKEN, ADMIN_TOKEN_ENABLED, ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME, PUBLIC_URL, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE, EMAIL_FROM, EMAIL_DEV_MODE, EMAIL_DEV_RECIPIENT, MAILBOXLAYER_API_KEY, MAILBOXLAYER_BASE_URL, MAILBOXLAYER_TIMEOUT_MS, MAILBOXLAYER_STRICT, CORS_ORIGINS, TRUST_PROXY, SESSION_COOKIE_NAME, SESSION_COOKIE_ONLY, SESSION_COOKIE_SECURE, SESSION_COOKIE_SAMESITE, SESSION_SECRET, JWT_SECRET } = require('./src/config/env');
+const { NODE_ENV, PORT, ADMIN_TOKEN, ADMIN_TOKEN_ENABLED, ADMIN_EMAIL, ADMIN_PASSWORD, ADMIN_NAME, PUBLIC_URL, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE, EMAIL_FROM, EMAIL_DEV_MODE, EMAIL_DEV_RECIPIENT, RESEND_API_KEY, MAILBOXLAYER_API_KEY, MAILBOXLAYER_BASE_URL, MAILBOXLAYER_TIMEOUT_MS, MAILBOXLAYER_STRICT, CORS_ORIGINS, TRUST_PROXY, SESSION_COOKIE_NAME, SESSION_COOKIE_ONLY, SESSION_COOKIE_SECURE, SESSION_COOKIE_SAMESITE, SESSION_SECRET, JWT_SECRET } = require('./src/config/env');
 const { isAdmin, requireAdmin, issueAdminSession, revokeAdminSession, ADMIN_SESSION_COOKIE_NAME, ADMIN_CSRF_COOKIE_NAME } = require('./src/middleware/admin');
 const db = require('./src/db');
 const { parseJSONField, validateProductInput, validateVariant, buildProductRow, computeCartTotals, getReviewSummary, computeProductInventory } = require('./src/utils');
@@ -220,24 +220,60 @@ if (typeof customerLoginCleanupTimer.unref === 'function') customerLoginCleanupT
 
 const EMAIL_SENDER = EMAIL_FROM || SMTP_USER || '';
 let mailTransport = null;
-if (SMTP_HOST && EMAIL_SENDER) {
+let useResend = false;
+
+// --- Resend HTTP API transport (works on Render free tier where SMTP ports are blocked) ---
+async function sendViaResend(message) {
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${RESEND_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      from: message.from,
+      to: Array.isArray(message.to) ? message.to : [message.to],
+      subject: message.subject,
+      html: message.html || undefined,
+      text: message.text || undefined
+    })
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Resend API error ${res.status}: ${body}`);
+  }
+  return res.json();
+}
+
+if (RESEND_API_KEY) {
+  // Prefer Resend HTTP API (no SMTP port needed, works on Render free tier)
+  useResend = true;
+  console.log('[mail] Using Resend HTTP API for email delivery.');
+  if (!EMAIL_SENDER) {
+    console.warn('[mail] EMAIL_FROM / SMTP_USER not set; using Resend default sender.');
+  }
+} else if (SMTP_HOST && EMAIL_SENDER) {
   const transportConfig = {
     host: SMTP_HOST,
     port: SMTP_PORT,
-    secure: SMTP_SECURE || SMTP_PORT === 465
+    secure: SMTP_SECURE || SMTP_PORT === 465,
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000
   };
   if (SMTP_USER) {
     transportConfig.auth = { user: SMTP_USER, pass: SMTP_PASS };
   }
   mailTransport = nodemailer.createTransport(transportConfig);
   mailTransport.verify().then(() => {
-    console.log('[mail] transport ready.');
+    console.log('[mail] SMTP transport ready.');
   }).catch((err) => {
-    console.warn('[mail] transport verification failed:', err?.message || err);
-    console.warn('[mail] verification details:', err);
+    console.warn('[mail] SMTP transport verification failed:', err?.message || err);
+    console.warn('[mail] If on Render free tier, SMTP ports (25/465/587) are blocked. Use RESEND_API_KEY instead.');
   });
 } else if (!EMAIL_DEV_MODE) {
   console.warn('[mail] Email transport not configured; verification emails disabled.');
+  console.warn('[mail] Tip: Set RESEND_API_KEY for HTTP-based email (works on Render free tier).');
 } else {
   console.warn('[mail] Email transport not configured; dev mode enabled (codes logged locally).');
 }
@@ -584,7 +620,8 @@ async function sendVerificationEmail(recipient, code) {
   if (EMAIL_DEV_MODE && EMAIL_DEV_RECIPIENT) {
     recipient = EMAIL_DEV_RECIPIENT;
   }
-  if (!mailTransport || !EMAIL_SENDER) {
+  const canSend = useResend || (mailTransport && EMAIL_SENDER);
+  if (!canSend) {
     if (EMAIL_DEV_MODE) {
       console.log(`[mail] dev mode verification code for ${recipient}: ${safeCode}`);
       return;
@@ -592,13 +629,17 @@ async function sendVerificationEmail(recipient, code) {
     throw new Error('Email transport not configured');
   }
   const message = {
-    from: EMAIL_SENDER,
+    from: EMAIL_SENDER || 'onboarding@resend.dev',
     to: recipient,
     subject: 'Your verification code',
     text: `Use this code to verify your email: ${safeCode}\nThis code expires in ${Math.round(EMAIL_VERIFICATION_TTL_MS / 60000)} minutes.`,
     html: `<p>Use the code below to verify your email address.</p><p style="font-size:24px;font-weight:bold;letter-spacing:4px;">${safeCode}</p><p>This code expires in ${Math.round(EMAIL_VERIFICATION_TTL_MS / 60000)} minutes.</p>`
   };
-  await mailTransport.sendMail(message);
+  if (useResend) {
+    await sendViaResend(message);
+  } else {
+    await mailTransport.sendMail(message);
+  }
 }
 
 async function sendPasswordResetEmail(recipient, code) {
@@ -606,7 +647,8 @@ async function sendPasswordResetEmail(recipient, code) {
   if (EMAIL_DEV_MODE && EMAIL_DEV_RECIPIENT) {
     recipient = EMAIL_DEV_RECIPIENT;
   }
-  if (!mailTransport || !EMAIL_SENDER) {
+  const canSend = useResend || (mailTransport && EMAIL_SENDER);
+  if (!canSend) {
     if (EMAIL_DEV_MODE) {
       console.log(`[mail] dev mode password reset code for ${recipient}: ${safeCode}`);
       return;
@@ -614,13 +656,17 @@ async function sendPasswordResetEmail(recipient, code) {
     throw new Error('Email transport not configured');
   }
   const message = {
-    from: EMAIL_SENDER,
+    from: EMAIL_SENDER || 'onboarding@resend.dev',
     to: recipient,
     subject: 'Your password reset code',
     text: `Use this code to reset your password: ${safeCode}\nThis code expires in ${Math.round(PASSWORD_RESET_TTL_MS / 60000)} minutes.`,
     html: `<p>Use the code below to reset your password.</p><p style="font-size:24px;font-weight:bold;letter-spacing:4px;">${safeCode}</p><p>This code expires in ${Math.round(PASSWORD_RESET_TTL_MS / 60000)} minutes.</p>`
   };
-  await mailTransport.sendMail(message);
+  if (useResend) {
+    await sendViaResend(message);
+  } else {
+    await mailTransport.sendMail(message);
+  }
 }
 
 function pruneExpiredVerifications() {
@@ -1297,7 +1343,7 @@ app.post('/api/customer/register/send-code', async (req, res) => {
       return res.status(429).json({ error: 'Too many requests. Try again later.' });
     }
     recordIpAttempt(ip, emailCodeIpAttempts);
-    const transportReady = !!(mailTransport && EMAIL_SENDER && SMTP_HOST);
+    const transportReady = useResend || !!(mailTransport && EMAIL_SENDER && SMTP_HOST);
     if (!transportReady && !EMAIL_DEV_MODE) {
       return res.status(503).json({ error: 'Email delivery is not configured' });
     }
@@ -1446,7 +1492,7 @@ app.post('/api/customer/password-reset/send-code', async (req, res) => {
       return res.status(429).json({ error: 'Too many requests. Try again later.' });
     }
     recordIpAttempt(ip, emailCodeIpAttempts);
-    const transportReady = !!(mailTransport && EMAIL_SENDER && SMTP_HOST);
+    const transportReady = useResend || !!(mailTransport && EMAIL_SENDER && SMTP_HOST);
     if (!transportReady && !EMAIL_DEV_MODE) {
       return res.status(503).json({ error: 'Email delivery is not configured' });
     }
@@ -2131,9 +2177,12 @@ app.post('/api/orders', (req, res) => {
         // Can't reuse same code as item discount
         if (!discountCode || discountCode !== shippingCode) {
           if (subtotalCents >= sd.minSubtotalCents) {
-            // value for ship type interpreted as percent off shipping (100 = free ship). Clamp 0-100.
-            const pct = Math.min(100, Math.max(0, sd.value));
-            shippingDiscountCents = Math.min(shippingCents, Math.floor(shippingCents * (pct / 100)));
+            if (sd.type === 'ship') {
+              shippingDiscountCents = Math.min(shippingCents, sd.value);
+            } else {
+              const pct = Math.min(100, Math.max(0, sd.value));
+              shippingDiscountCents = Math.min(shippingCents, Math.floor(shippingCents * (pct / 100)));
+            }
           }
         }
       }
@@ -2232,8 +2281,12 @@ app.post('/api/orders', (req, res) => {
     if (sd && !sd.disabledAt && (!sd.expiresAt || new Date(sd.expiresAt).getTime() > Date.now()) && (sd.type === 'ship' || (/SHIP/i.test(sd.code || '') && sd.type === 'percent' && sd.value === 100))) {
       if (!discountCode || discountCode !== shippingCode) {
         if (subtotal >= sd.minSubtotalCents) {
-          const pct = Math.min(100, Math.max(0, sd.value));
-          shippingDiscountCents = Math.min(shippingCents, Math.floor(shippingCents * (pct / 100)));
+          if (sd.type === 'ship') {
+            shippingDiscountCents = Math.min(shippingCents, sd.value);
+          } else {
+            const pct = Math.min(100, Math.max(0, sd.value));
+            shippingDiscountCents = Math.min(shippingCents, Math.floor(shippingCents * (pct / 100)));
+          }
         }
       }
     }
@@ -2745,19 +2798,36 @@ app.post('/api/discounts', requireAdmin, (req, res) => {
   if (type === 'ship' || type === 'shipping' || type === 'freeship' || type === 'free-ship') type = 'ship';
   if (!['percent', 'fixed', 'ship'].includes(type)) return res.status(400).json({ error: 'Invalid type' });
   if (!Number.isInteger(value) || value <= 0) return res.status(400).json({ error: 'Invalid value' });
+  if (type === 'percent' && (value < 1 || value > 100)) return res.status(400).json({ error: 'Percent value must be 1-100' });
   if (!Number.isInteger(minSubtotalCents) || minSubtotalCents < 0) return res.status(400).json({ error: 'Invalid minSubtotalCents' });
-  db.prepare('INSERT INTO discounts(code,type,value,minSubtotalCents,expiresAt,createdAt) VALUES(?,?,?,?,?,?)').run(code.toUpperCase(), type, value, minSubtotalCents, expiresAt, new Date().toISOString());
-  metrics.discountsCreated++;
-  audit('discount', code.toUpperCase(), 'create', null, { code: code.toUpperCase(), type, value });
-  res.status(201).json({ code: code.toUpperCase() });
+  if (type === 'percent' && (value < 1 || value > 100)) return res.status(400).json({ error: 'Percent value must be 1-100' });
+  try {
+    db.prepare('INSERT INTO discounts(code,type,value,minSubtotalCents,expiresAt,createdAt) VALUES(?,?,?,?,?,?)').run(code.toUpperCase(), type, value, minSubtotalCents, expiresAt, new Date().toISOString());
+    metrics.discountsCreated++;
+    audit('discount', code.toUpperCase(), 'create', null, { code: code.toUpperCase(), type, value });
+    res.status(201).json({ code: code.toUpperCase() });
+  } catch (err) {
+    console.error('[discount:create] failed', err);
+    if (err?.code === 'SQLITE_CONSTRAINT_UNIQUE' || /UNIQUE constraint failed/i.test(err?.message)) {
+      return res.status(409).json({ error: 'Discount code already exists' });
+    }
+    const detail = NODE_ENV === 'production' ? undefined : (err?.message || String(err));
+    res.status(500).json({ error: 'Failed to create discount', detail });
+  }
 });
 
 app.get('/api/discounts', requireAdmin, (req, res) => {
-  const rows = db.prepare('SELECT * FROM discounts ORDER BY createdAt DESC').all();
-  // Prevent 304 so frontend always receives body
-  res.set('Cache-Control', 'no-store');
-  res.set('ETag', Date.now().toString());
-  res.json({ discounts: rows });
+  try {
+    const rows = db.prepare('SELECT * FROM discounts ORDER BY createdAt DESC').all();
+    // Prevent 304 so frontend always receives body
+    res.set('Cache-Control', 'no-store');
+    res.set('ETag', Date.now().toString());
+    res.json({ discounts: rows });
+  } catch (err) {
+    console.error('[discounts] load failed', err);
+    const detail = NODE_ENV === 'production' ? undefined : (err?.message || String(err));
+    res.status(500).json({ error: 'Unable to load discounts', detail });
+  }
 });
 
 app.post('/api/discounts/:code/disable', requireAdmin, (req, res) => {

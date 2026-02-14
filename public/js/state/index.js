@@ -26,6 +26,7 @@ export const state = {
         orders: [],
         reviews: { items: [], status: 'pending' },
         discounts: [],
+        discountFilter: 'all',
         lowStock: [],
         showDeleted: false,
         ordersFilter: 'all',

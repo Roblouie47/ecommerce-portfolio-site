@@ -116,6 +116,92 @@
   transition: background .2s ease, transform .15s ease, box-shadow .2s ease;
 }
 
+/* Admin discount filters */
+.admin-discount-filters {
+  display: inline-flex;
+  align-items: center;
+  gap: .5rem;
+  padding: 0;
+  border-radius: 999px;
+  background: transparent;
+  border: none;
+}
+
+.admin-discount-filters .btn {
+  padding: .40rem .65rem;
+  font-size: .78rem;
+  border: 1px solid transparent;
+  color: #0f172a;
+  background: #ffffff;
+  box-shadow: 0 10px 24px -20px rgba(15, 23, 42, .3);
+  transition: background .2s ease, color .2s ease, border-color .2s ease, transform .15s ease, box-shadow .2s ease;
+}
+
+.admin-discount-filters .btn:hover {
+  background: #f8fafc;
+  border-color: rgba(15, 23, 42, .2);
+  color: #0f172a;
+}
+
+.admin-discount-filters .btn.active {
+  box-shadow: 0 12px 28px -18px rgba(15, 23, 42, .45);
+}
+
+.admin-discount-filters #discount-filter-all {
+  background: #ffffff;
+  color: #0f172a;
+  border-color: rgba(15, 23, 42, .25);
+}
+
+.admin-discount-filters #discount-filter-all:hover {
+  background: #f1f5f9;
+}
+
+.admin-discount-filters #discount-filter-all.active {
+  background: #3f568b;
+  color: #ffffff;
+  border-color: #3f568b;
+}
+
+.admin-discount-filters #discount-filter-enabled {
+  background: #ffffff;
+  color: #166534;
+  border-color: rgba(22, 101, 52, .45);
+}
+
+.admin-discount-filters #discount-filter-enabled:hover {
+  background: #dcfce7;
+}
+
+.admin-discount-filters #discount-filter-enabled.active {
+  background: #166534;
+  color: #ffffff;
+  border-color: #166534;
+  box-shadow: 0 12px 28px -18px rgba(22, 101, 52, .7);
+}
+
+.admin-discount-filters #discount-filter-disabled {
+  background: #ffffff;
+  color: #b91c1c;
+  border-color: rgba(185, 28, 28, .5);
+}
+
+.admin-discount-filters #discount-filter-disabled:hover {
+  background: #fee2e2;
+}
+
+.admin-discount-filters #discount-filter-disabled.active {
+  background: #b91c1c;
+  color: #ffffff;
+  border-color: #b91c1c;
+  box-shadow: 0 12px 28px -18px rgba(185, 28, 28, .8);
+}
+
+.admin-discount-filters .btn:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, .5);
+  outline-offset: 2px;
+}
+
 .status-chip.cancelled {
   background: #fee2e2;
   color: #991b1b;

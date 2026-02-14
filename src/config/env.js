@@ -62,6 +62,7 @@ module.exports = {
     EMAIL_FROM: process.env.EMAIL_FROM || process.env.SMTP_USER || '',
     EMAIL_DEV_MODE: parseBoolean(process.env.EMAIL_DEV_MODE, NODE_ENV !== 'production'),
     EMAIL_DEV_RECIPIENT: process.env.EMAIL_DEV_RECIPIENT || '',
+    RESEND_API_KEY: process.env.RESEND_API_KEY || '',
     MAILBOXLAYER_API_KEY: process.env.MAILBOXLAYER_API_KEY || '',
     MAILBOXLAYER_BASE_URL: process.env.MAILBOXLAYER_BASE_URL || 'http://apilayer.net/api/check',
     MAILBOXLAYER_TIMEOUT_MS: parseNumber(process.env.MAILBOXLAYER_TIMEOUT_MS, 6000),
